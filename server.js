@@ -68,7 +68,7 @@ net.createServer(serviceSocket => {
         createServer(dataJson.name)
         connections[dataJson.name][AGENT].socket = serviceSocket
         if (!connections[dataJson.name][CLIENT]) return
-        let notifier = null
+        // let notifier = null
         Object.keys(connections[dataJson.name][CLIENT]).forEach(clientUuid => {
           // if (!notifier) {
           //   notifier = notify(connections[dataJson.name][AGENT].socket, connections[dataJson.name][AGENT].port, dataJson.uuid)
@@ -161,6 +161,7 @@ function createServer (connectionName) {
           console.log('creating pipe; by client')
           socket.pipe(clientSocket)
           clientSocket.pipe(socket)
+          notify(clientSocket, 'to', 'do') // todo
           console.log(Object.keys(conPipes).length)
           conPipes[socket.uuid].socket = clientSocket
           if (!clientSocket.uuid || !conPipes[clientSocket.uuid]) {

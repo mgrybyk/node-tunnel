@@ -11,16 +11,18 @@ const localPort = parseInt(process.env.N_T_CLIENT_PORT) || 8000
 
 let serviceClient = new net.Socket()
 let isDataClient = false
-let counter = 0
+// let counter = 0
 
 let dataJson
 // serviceClient.setNoDelay(true)
 
 // local
-let localServer = net.createServer(localSocket => {
-  let id = ++counter
+// let localServer =
+net.createServer(localSocket => {
+  // let id = ++counter
   let isDataClientConnected = false
   let firstData = null
+  // localSocket.pause()
 
   if (!isDataClient) {
     return localSocket.destroy()
@@ -29,16 +31,15 @@ let localServer = net.createServer(localSocket => {
   let dataClient = new net.Socket()
   dataClient.on('connect', () => {
     dataClient.write(`{ "type": "client", "uuid": "${dataJson.uuid}" }`)
+  })
+  dataClient.once('data', data => {
     dataClient.pipe(localSocket)
     localSocket.pipe(dataClient)
     isDataClientConnected = true
-    setTimeout(() => {
-      if (firstData) dataClient.write(firstData)
-    }, 100)
+    if (firstData) dataClient.write(firstData)
   })
 
   dataClient.connect(dataJson.port, serverHost)
-  // dataClient.on('data', data => console.log(id))
 
   dataClient.on('close', error => {
     console.log(`closed dataClient ${clientName}(${dataJson.uuid.substr(-3)}), error: `, error)
@@ -48,19 +49,23 @@ let localServer = net.createServer(localSocket => {
   })
 
   function localSocketDataLsnr (data) {
-    console.log('LOCAL SOCKET', id)
+    // console.log('LOCAL SOCKET', id)
     if (!isDataClientConnected) {
       firstData = data
     } else localSocket.removeListener('data', localSocketDataLsnr)
   }
   localSocket.on('data', localSocketDataLsnr)
 
+  // localSocket.once('data', data => {
+  //   if (!isDataClientConnected)
+  // })
+
   localSocket.on('error', error => {
     console.error(error)
   })
 
   localSocket.on('close', hadError => {
-    console.log('LOCAL CLOSE', id)
+    // console.log('LOCAL CLOSE', id)
     if (isDataClientConnected) {
       dataClient.unpipe(localSocket)
       localSocket.unpipe(dataClient)
