@@ -1,0 +1,16 @@
+{
+  "name": "node-tunnel",
+  "version": "0.0.1",
+  "description": "",
+  "main": "",
+  "dependencies": {
+    "dotenv": "^4.0.0",
+    "socks5": "^1.0.0",
+    "uuid": "^3.0.1"
+  },
+  "devDependencies": {},
+  "scripts": {},
+  "keywords": [],
+  "author": "mgrybyk",
+  "license": "ISC"
+}
