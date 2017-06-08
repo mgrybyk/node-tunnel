@@ -4,7 +4,7 @@ require('dotenv').config()
 const net = require('net')
 const utils = require('./utils')
 
-const clientName = process.env.N_T_AGENT_NAME || 'dbg'
+const clientName = process.env.N_T_CLIENT_NAME || 'dbg'
 const serverHost = process.env.N_T_SERVER_HOST || 'localhost'
 const serverPort = parseInt(process.env.N_T_SERVER_PORT) || 1337
 const localPort = parseInt(process.env.N_T_CLIENT_PORT) || 8000
