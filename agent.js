@@ -18,67 +18,71 @@ let serviceAgent = new net.Socket()
 let agentCounter = 0
 
 serviceAgent.on('data', data => {
-  let dataJson = utils.tryParseJSON(data.toString('utf8'))
-  console.log('service agent', dataJson)
+  let dataArr = data.toString('utf8').split('}')
+  dataArr.forEach(value => {
+    if (value) return
+    let dataJson = utils.tryParseJSON(value + '}')
+    console.log('service agent', dataJson)
   // if (isDataAgent) return
   // isDataAgent = true
-  let dataAgent = new net.Socket()
+    let dataAgent = new net.Socket()
 
-  dataAgent.on('close', error => {
-    console.error(`closed dataAgent '${dataJson.uuid.substr(-3)}:${currentCounter}', error:`, error)
-  })
-  let currentCounter = ++agentCounter
-  dataAgent.on('connect', () => {
-    console.log('data agent connected!')
-    dataAgent.write(`{ "type": "agent", "uuid": "${dataJson.uuid}:${currentCounter}" }`)
-    let localSocket = new net.Socket()
-    let firstData = ''
-    dataAgent.once('data', data => {
-      firstData = data
-      localSocketConnect(1)
+    dataAgent.on('close', error => {
+      console.error(`closed dataAgent '${dataJson.uuid.substr(-3)}:${currentCounter}', error:`, error)
     })
+    let currentCounter = ++agentCounter
+    dataAgent.on('connect', () => {
+      console.log('data agent connected!')
+      dataAgent.write(`{ "type": "agent", "uuid": "${dataJson.uuid}:${currentCounter}" }`)
+      let localSocket = new net.Socket()
+      let firstData = ''
+      dataAgent.once('data', data => {
+        firstData = data
+        localSocketConnect(1)
+      })
     // dataAgent.on('data', data => {
     //   console.log('\n\nDATA', isFirstData, isConnected, '\n\n', data.toString())
     // })
 
-    function localSocketConnect (delay, data) {
-      setTimeout(() => {
-        localSocket.connect(dataPort, dataHost)
-      }, delay)
-    }
-
-    localSocket.on('connect', function () {
-      console.log('Connection to local port established.', currentCounter)
-
-      if (dataAgent.destroyed) {
-        localSocket.destroy()
-      } else {
-        dataAgent.pipe(localSocket)
-        localSocket.pipe(dataAgent)
-        pipes[currentCounter] = true
+      function localSocketConnect (delay, data) {
+        setTimeout(() => {
+          localSocket.connect(dataPort, dataHost)
+        }, delay)
       }
-      localSocket.write(firstData)
-    })
 
-    localSocket.on('error', err => {
-      console.error(err)
-    })
+      localSocket.on('connect', function () {
+        console.log('Connection to local port established.', currentCounter)
+
+        if (dataAgent.destroyed) {
+          localSocket.destroy()
+        } else {
+          dataAgent.pipe(localSocket)
+          localSocket.pipe(dataAgent)
+          pipes[currentCounter] = true
+        }
+        localSocket.write(firstData)
+      })
+
+      localSocket.on('error', err => {
+        console.error(err)
+      })
 
     // localSocket.on('data', data => {
     //   console.log(currentCounter)
     // })
 
-    localSocket.on('close', function () {
-      console.log('Connection to local port closed')
-      if (pipes[currentCounter] === true) {
-        dataAgent.unpipe(localSocket)
-        localSocket.unpipe(dataAgent)
-        pipes[currentCounter] = false
-        if (!dataAgent.destroy) dataAgent.destroy()
-      }
+      localSocket.on('close', function () {
+        console.log('Connection to local port closed')
+        if (pipes[currentCounter] === true) {
+          dataAgent.unpipe(localSocket)
+          localSocket.unpipe(dataAgent)
+          pipes[currentCounter] = false
+          if (!dataAgent.destroy) dataAgent.destroy()
+        }
+      })
     })
+    dataAgent.connect(dataJson.port, serverHost)
   })
-  dataAgent.connect(dataJson.port, serverHost)
 })
 
 serviceAgent.on('connect', () => {
