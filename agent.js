@@ -20,7 +20,7 @@ let agentCounter = 0
 serviceAgent.on('data', data => {
   let dataArr = data.toString('utf8').split('}')
   dataArr.forEach(value => {
-    if (value) return
+    if (!value) return
     let dataJson = utils.tryParseJSON(value + '}')
     console.log('service agent', dataJson)
   // if (isDataAgent) return
