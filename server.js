@@ -5,8 +5,9 @@ const net = require('net')
 const uuid = require('uuid/v4')
 const utils = require('./utils')
 
-const config = require('./config')
-const ports = Array(config.ports.to - config.ports.from).fill().map((e, i) => i + config.ports.from)
+let portsFrom = parseInt(process.env.N_T_SERVER_PORTS_FROM) || 3005
+let portsTo = parseInt(process.env.N_T_SERVER_PORTS_TO) || 3009
+const ports = Array(portsTo - portsFrom).fill().map((e, i) => i + portsFrom)
 
 const AGENT = 'agent'
 const CLIENT = 'client'
@@ -110,7 +111,7 @@ net.createServer(serviceSocket => {
       delete connections[cProps.name][CLIENT][cProps.uuid]
     }
   })
-}).listen(process.env.N_T_SERVER_PORT || 1337)
+}).listen(parseInt(process.env.N_T_SERVER_PORT) || 1337)
 
 function notify (socket, port, uuid) {
   return new Promise((resolve, reject) => {
