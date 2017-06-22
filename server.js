@@ -107,10 +107,19 @@ net.createServer(serviceSocket => {
       // notify clients that agent went offline
       if (connections[cProps.name][CLIENT]) {
         Object.keys(connections[cProps.name][CLIENT]).forEach(clientUuid => {
+          connections[cProps.name][CLIENT][clientUuid].socket.write('{"agentDied": true}')
           connections[cProps.name][CLIENT][clientUuid].socket.destroy()
         })
       }
+      pipes[cProps.name].server.maxConnections = 0
+      if (pipes[cProps.name].pipes) {
+        Object.keys(pipes[cProps.name].pipes).forEach(pipeUuid => {
+          pipes[cProps.name].pipes[pipeUuid].socket.unpipe()
+          pipes[cProps.name].pipes[pipeUuid].socket.destroy()
+        })
+      }
       // stop server
+      let serverDead = false
       pipes[cProps.name].server.close(someArg => {
         console.log('server stopped', cProps.name)
 
@@ -118,9 +127,18 @@ net.createServer(serviceSocket => {
         ports.push(connections[cProps.name][AGENT].port)
 
         // delete agent from connections
+        serverDead = true
         delete connections[cProps.name][AGENT]
-        delete pipes[cProps.name].pipes
+        delete pipes[cProps.name]
       })
+      // sometimes server not stopping
+      // but we need to live at least somehow
+      setTimeout(() => {
+        if (!serverDead) {
+          delete connections[cProps.name][AGENT]
+          delete pipes[cProps.name]
+        }
+      }, 10000)
     } else if (cProps.type === CLIENT) {
       delete connections[cProps.name][CLIENT][cProps.uuid]
     }
