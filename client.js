@@ -25,8 +25,8 @@ net.createServer(localSocket => {
   }
 
   let dataClient = new net.Socket()
+  dataClient.uuid = 'client-' + uuid()
   dataClient.on('connect', () => {
-    dataClient.uuid = 'client-' + uuid()
     dataClient.write(`{ "type": "client", "uuid": "${dataClient.uuid}" }`)
   })
   dataClient.once('data', data => {
@@ -70,6 +70,7 @@ net.createServer(localSocket => {
 serviceClient.on('data', data => {
   let tmpJson = utils.tryParseJSON(data.toString('utf8'))
   if (tmpJson.pong) return
+  if (tmpJson.agentDied || !tmpJson.port) return dataJson = null
   dataJson = tmpJson
   console.log(dataJson)
   if (dataJson.port === null) return
