@@ -7,11 +7,10 @@ const info = console.log.bind(console)
 // The server accepts SOCKS connections. This particular server acts as a proxy.
 const HOST = process.env.N_T_PROXY_HOST || '127.0.0.1'
 const PORT = process.env.N_T_PROXY_PORT || '8888'
-const server = socks.createServer(function (socket, port, address, proxy_ready) {
-  // Implement your own proxy here! Do encryption, tunnelling, whatever! Go flippin' mental!
-  // I plan to tunnel everything including SSH over an HTTP tunnel. For now, though, here is the plain proxy:
+const server = socks.createServer(function (socket, port, address, proxyReady) {
+  // WARN: it just a simply proxy, no encryption, not secure!!
 
-  var proxy = net.createConnection({ port: port, host: address, localAddress: process.argv[2] || undefined }, proxy_ready)
+  var proxy = net.createConnection({ port: port, host: address, localAddress: process.argv[2] || undefined }, proxyReady)
   var localAddress, localPort
   proxy.on('connect', function () {
     info('%s:%d <== %s:%d ==> %s:%d', socket.remoteAddress, socket.remotePort,
@@ -51,27 +50,29 @@ const server = socks.createServer(function (socket, port, address, proxy_ready) 
     } catch (err) { }
   })
 
-  proxy.on('error', err => { }) // console.log('Ignore proxy error');
+  proxy.on('error', errIgnored => { }) // console.log('Ignore proxy error');
 
-  proxy.on('close', had_error => {
+  proxy.on('close', hadError => {
     try {
       if (localAddress && localPort) {
         console.log('The proxy %s:%d closed', localAddress, localPort)
       } else {
-        console.error('Connect to %s:%d failed', address, port)
+        console.error('Connect to %s:%d failed', address, port, hadError)
       }
       if (!socket.destroyed) socket.end()
     } catch (err) { }
   })
 
-  socket.on('error', err => { }) // console.log('Ignore socket error');
-  socket.on('close', function (had_error) {
+  socket.on('error', errIgnored => {})
+  socket.on('close', function (hadError) {
     try {
       if (this.proxy !== undefined) {
         proxy.removeAllListeners('data')
         if (!proxy.destroyed) proxy.end()
       }
-    } catch (err) { } // console.error('The socket %s:%d closed',socket.remoteAddress,socket.remotePort);
+    } catch (err) {
+      console.error('The socket %s:%d closed', socket.remoteAddress, socket.remotePort, hadError)
+    }
   }.bind(this))
 }, process.env.N_T_PROXY_USER && process.env.N_T_PROXY_PASS && {
   username: process.env.N_T_PROXY_USER,
@@ -80,7 +81,7 @@ const server = socks.createServer(function (socket, port, address, proxy_ready) 
 
 server.on('error', function (e) {
   console.error('SERVER ERROR: %j', e)
-  if (e.code == 'EADDRINUSE') {
+  if (e.code === 'EADDRINUSE') {
     console.log('Address in use, retrying in 10 seconds...')
     setTimeout(function () {
       console.log('Reconnecting to %s:%s', HOST, PORT)

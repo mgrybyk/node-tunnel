@@ -3,107 +3,117 @@
 require('dotenv').config()
 const net = require('net')
 const utils = require('./utils')
+const uuid = require('uuid/v4')
 
 const agentName = process.env.N_T_AGENT_NAME || 'dbg'
 const serverHost = process.env.N_T_SERVER_HOST || 'localhost'
 const serverPort = parseInt(process.env.N_T_SERVER_PORT) || 1337
-const dataHost = process.env.N_T_AGENT_DATA_HOST || 'localhost'
-const dataPort = parseInt(process.env.N_T_AGENT_DATA_PORT) || 22
 
-// let connections = {}
-let pipes = {}
+// NOTE: I can actually pass these values from client,
+// but it is EXTREAMLY not secure
+const pipeHost = process.env.N_T_AGENT_DATA_HOST || 'localhost'
+const pipePort = parseInt(process.env.N_T_AGENT_DATA_PORT) || 22
+let fatalError = false
+let serviceUuid
+let dataPort
 
 // remote
 let serviceAgent = new net.Socket()
-let agentCounter = 0
 
 serviceAgent.on('data', data => {
   let dataArr = data.toString('utf8').split('}')
   dataArr.forEach(value => {
     if (!value) return
     let dataJson = utils.tryParseJSON(value + '}')
+    if (dataJson.error) {
+      console.error(dataJson.error)
+      fatalError = true
+      return serviceAgent.destroy()
+    }
+    if (dataJson.pong) { return }
+    if (dataJson.uuid && dataJson.port) {
+      serviceUuid = dataJson.uuid
+      dataPort = dataJson.port
+      return console.log('setting port and uuid:', dataJson.port, dataJson.uuid)
+    }
+    if (!dataJson.data || !dataPort) {
+      console.log('fuck', dataJson)
+      return
+    }
+
     console.log('service agent', dataJson)
-  // if (isDataAgent) return
-  // isDataAgent = true
     let dataAgent = new net.Socket()
 
     dataAgent.on('close', error => {
-      console.error(`closed dataAgent '${dataJson.uuid.substr(-3)}:${currentCounter}', error:`, error)
+      if (error) console.error(`closed dataAgent '${dataAgent.uuid}'`)
     })
-    let currentCounter = ++agentCounter
+    // let currentCounter = ++agentCounter
     dataAgent.on('connect', () => {
       console.log('data agent connected!')
-      dataAgent.write(`{ "type": "agent", "uuid": "${dataJson.uuid}:${currentCounter}" }`)
+      dataAgent.uuid = 'agent-' + uuid()
+      dataAgent.write(`{ "type": "agent", "uuid": "${dataAgent.uuid}" }`)
       let localSocket = new net.Socket()
+      let isPiped = false
       let firstData = ''
       dataAgent.once('data', data => {
         firstData = data
-        localSocketConnect(1)
+        localSocket.connect(pipePort, pipeHost)
       })
-    // dataAgent.on('data', data => {
-    //   console.log('\n\nDATA', isFirstData, isConnected, '\n\n', data.toString())
-    // })
-
-      function localSocketConnect (delay, data) {
-        setTimeout(() => {
-          localSocket.connect(dataPort, dataHost)
-        }, delay)
-      }
 
       localSocket.on('connect', function () {
-        console.log('Connection to local port established.', currentCounter)
+        console.log('Connection to local port established.')
 
         if (dataAgent.destroyed) {
           localSocket.destroy()
         } else {
           dataAgent.pipe(localSocket)
           localSocket.pipe(dataAgent)
-          pipes[currentCounter] = true
+          isPiped = true
         }
         localSocket.write(firstData)
       })
 
-      localSocket.on('error', err => {
-        console.error(err)
-      })
+      localSocket.on('error', err => {})
 
-    // localSocket.on('data', data => {
-    //   console.log(currentCounter)
-    // })
-
-      localSocket.on('close', function () {
+      localSocket.on('close', () => {
         console.log('Connection to local port closed')
-        if (pipes[currentCounter] === true) {
+        if (isPiped) {
           dataAgent.unpipe(localSocket)
           localSocket.unpipe(dataAgent)
-          pipes[currentCounter] = false
-          if (!dataAgent.destroy) dataAgent.destroy()
+          isPiped = false
         }
+        if (!dataAgent.destroy) dataAgent.destroy()
       })
     })
-    dataAgent.connect(dataJson.port, serverHost)
+    dataAgent.connect(dataPort, serverHost)
   })
 })
 
+let pinger
 serviceAgent.on('connect', () => {
   console.log('Connection established.')
-  serviceAgent.write(`{ "type": "agent", "name": "${agentName}" }`)
+  let msg = { type: 'agent', name: agentName }
+  if (serviceUuid) msg.uuid = serviceUuid
+  serviceAgent.write(JSON.stringify(msg))
+  if (pinger) clearInterval(pinger)
+  pinger = setInterval(() => {
+    serviceAgent.write('0')
+  }, 15000)
 })
 
 serviceAgent.on('error', error => {
-  console.error(error.name, error.message)
+  // console.error(error.name, error.message)
 })
 
 serviceAgent.on('close', hadError => {
+  if (pinger) clearInterval(pinger)
   serviceAgent.destroy()
-  console.log('closed with error: ', hadError)
   if (hadError === true) {
+    console.log('closed with error: ', hadError)
+  }
+  if (!fatalError) {
     connectWithDelay(5000)
   }
-})
-
-serviceAgent.end('end', () => {
-  console.log('ended')
 })
 
 function connect () {

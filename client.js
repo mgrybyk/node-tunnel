@@ -3,6 +3,7 @@
 require('dotenv').config()
 const net = require('net')
 const utils = require('./utils')
+const uuid = require('uuid/v4')
 
 const clientName = process.env.N_T_CLIENT_NAME || 'dbg'
 const serverHost = process.env.N_T_SERVER_HOST || 'localhost'
@@ -11,18 +12,13 @@ const localPort = parseInt(process.env.N_T_CLIENT_PORT) || 8000
 
 let serviceClient = new net.Socket()
 let isDataClient = false
-// let counter = 0
 
 let dataJson
-// serviceClient.setNoDelay(true)
 
 // local
-// let localServer =
 net.createServer(localSocket => {
-  // let id = ++counter
   let isDataClientConnected = false
   let firstData = null
-  // localSocket.pause()
 
   if (!isDataClient) {
     return localSocket.destroy()
@@ -30,7 +26,8 @@ net.createServer(localSocket => {
 
   let dataClient = new net.Socket()
   dataClient.on('connect', () => {
-    dataClient.write(`{ "type": "client", "uuid": "${dataJson.uuid}" }`)
+    dataClient.uuid = 'client-' + uuid()
+    dataClient.write(`{ "type": "client", "uuid": "${dataClient.uuid}" }`)
   })
   dataClient.once('data', data => {
     dataClient.pipe(localSocket)
@@ -42,30 +39,26 @@ net.createServer(localSocket => {
   dataClient.connect(dataJson.port, serverHost)
 
   dataClient.on('close', error => {
-    console.log(`closed dataClient ${clientName}(${dataJson.uuid.substr(-3)}), error: `, error)
+    if (error) console.log(`closed dataClient (${dataClient.uuid})`)
+    if (localSocket && !localSocket.destroyed) localSocket.destroy()
   })
   dataClient.on('error', error => {
-    console.log(`dataClient ${clientName}(${dataJson.uuid.substr(-3)}), error: `, error)
+    // console.log(`dataClient ${clientName}(${dataJson.uuid.substr(-3)}), error: `, error)
   })
 
   function localSocketDataLsnr (data) {
-    // console.log('LOCAL SOCKET', id)
     if (!isDataClientConnected) {
       firstData = data
     } else localSocket.removeListener('data', localSocketDataLsnr)
   }
   localSocket.on('data', localSocketDataLsnr)
 
-  // localSocket.once('data', data => {
-  //   if (!isDataClientConnected)
-  // })
-
   localSocket.on('error', error => {
-    console.error(error)
+    // console.error(error)
   })
 
   localSocket.on('close', hadError => {
-    // console.log('LOCAL CLOSE', id)
+    // console.log('LOCAL CLOSE')
     if (isDataClientConnected) {
       dataClient.unpipe(localSocket)
       localSocket.unpipe(dataClient)
@@ -75,38 +68,38 @@ net.createServer(localSocket => {
 }).listen(localPort)
 
 serviceClient.on('data', data => {
-  dataJson = utils.tryParseJSON(data.toString('utf8'))
+  let tmpJson = utils.tryParseJSON(data.toString('utf8'))
+  if (tmpJson.pong) return
+  dataJson = tmpJson
   console.log(dataJson)
-  if (isDataClient) {
-    console.log('isDataClient')
-    if (dataJson.port === null) {
-      // dataClient.destroy('agent went offline') // todo do i need to destroy?
-    }
-    return
-  }
   if (dataJson.port === null) return
   isDataClient = true
 })
 
+let pinger
 serviceClient.on('connect', () => {
   console.log('Connection established.')
-  serviceClient.write(`{ "type": "client", "name": "${clientName}" }`)
+  let msg = { type: 'client', name: clientName }
+  if (dataJson && dataJson.uuid) msg.uuid = dataJson.uuid
+  serviceClient.write(JSON.stringify(msg))
+  pinger = setInterval(() => {
+    serviceClient.write('0')
+  }, 15000)
+  if (dataJson) isDataClient = true
 })
 
 serviceClient.on('error', error => {
-  console.log(error.name, error.message)
+  // console.log(error.name, error.message)
 })
 
 serviceClient.on('close', hadError => {
-  serviceClient.destroy()
-  console.log('closed with error: ', hadError)
-  if (hadError === true) {
-    connectWithDelay(2000)
-  }
-})
-
-serviceClient.end('end', () => {
-  console.log('ended')
+  if (pinger) clearInterval(pinger)
+  if (!serviceClient.destroyed) serviceClient.destroy()
+  isDataClient = false
+  // console.log('closed with error: ', hadError)
+  // if (hadError === true) {
+  connectWithDelay(5000)
+  // }
 })
 
 function connect () {
