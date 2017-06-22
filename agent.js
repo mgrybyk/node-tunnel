@@ -47,6 +47,7 @@ serviceAgent.on('data', data => {
     dataAgent.on('close', error => {
       if (error) console.error(`closed dataAgent '${dataAgent.uuid}'`)
     })
+    dataAgent.on('error', error => {})
     // let currentCounter = ++agentCounter
     dataAgent.on('connect', () => {
       console.log('data agent connected!')
@@ -130,7 +131,9 @@ connectWithDelay(500)
 
 process.on('exit', (code) => {
   console.log(`About to exit with code: ${code}`)
+  serviceAgent.end()
   serviceAgent.destroy()
+  serviceAgent.unref()
 })
 
 process.on('SIGINT', () => {
