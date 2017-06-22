@@ -2,7 +2,7 @@
 
 require('dotenv').config()
 const net = require('net')
-const utils = require('./utils')
+const { tryParseJSON, log, removeElement } = require('./utils')
 const uuid = require('uuid/v4')
 
 const agentName = process.env.N_T_AGENT_NAME || 'dbg'
@@ -17,6 +17,9 @@ let fatalError = false
 let serviceUuid
 let dataPort
 
+let localConnections = []
+let dataConnections = []
+
 // remote
 let serviceAgent = new net.Socket()
 
@@ -24,9 +27,9 @@ serviceAgent.on('data', data => {
   let dataArr = data.toString('utf8').split('}')
   dataArr.forEach(value => {
     if (!value) return
-    let dataJson = utils.tryParseJSON(value + '}')
+    let dataJson = tryParseJSON(value + '}')
     if (dataJson.error) {
-      console.error(dataJson.error)
+      log(dataJson.error)
       fatalError = true
       return serviceAgent.destroy()
     }
@@ -34,26 +37,29 @@ serviceAgent.on('data', data => {
     if (dataJson.uuid && dataJson.port) {
       serviceUuid = dataJson.uuid
       dataPort = dataJson.port
-      return console.log('setting port and uuid:', dataJson.port, dataJson.uuid)
+      return log('setting port and uuid:', dataJson.port, dataJson.uuid)
     }
     if (!dataJson.data || !dataPort) {
-      console.log('fuck', dataJson)
+      log('fuck', dataJson)
       return
     }
 
-    console.log('service agent', dataJson)
+    log('service agent', dataJson)
     let dataAgent = new net.Socket()
+    dataConnections.push(dataAgent)
+    dataAgent.uuid = 'agent-' + uuid()
 
     dataAgent.on('close', error => {
-      if (error) console.error(`closed dataAgent '${dataAgent.uuid}'`)
+      removeElement(dataConnections, dataAgent)
+      if (error) log(`closed dataAgent '${dataAgent.uuid}'`)
     })
-    dataAgent.on('error', error => {})
+    dataAgent.on('error', errorIgnored => {})
     // let currentCounter = ++agentCounter
     dataAgent.on('connect', () => {
-      console.log('data agent connected!')
-      dataAgent.uuid = 'agent-' + uuid()
+      log('data agent connected!')
       dataAgent.write(`{ "type": "agent", "uuid": "${dataAgent.uuid}" }`)
       let localSocket = new net.Socket()
+      localConnections.push(localSocket)
       let isPiped = false
       let firstData = ''
       dataAgent.once('data', data => {
@@ -62,7 +68,7 @@ serviceAgent.on('data', data => {
       })
 
       localSocket.on('connect', function () {
-        console.log('Connection to local port established.')
+        log('Connection to local port established.')
 
         if (dataAgent.destroyed) {
           localSocket.destroy()
@@ -74,10 +80,11 @@ serviceAgent.on('data', data => {
         localSocket.write(firstData)
       })
 
-      localSocket.on('error', err => {})
+      localSocket.on('error', errIgnored => {})
 
       localSocket.on('close', () => {
-        console.log('Connection to local port closed')
+        removeElement(localConnections, localSocket)
+        log('Connection to local port closed')
         if (isPiped) {
           dataAgent.unpipe(localSocket)
           localSocket.unpipe(dataAgent)
@@ -92,7 +99,7 @@ serviceAgent.on('data', data => {
 
 let pinger
 serviceAgent.on('connect', () => {
-  console.log('Connection established.')
+  log('Connection established.')
   let msg = { type: 'agent', name: agentName }
   if (serviceUuid) msg.uuid = serviceUuid
   serviceAgent.write(JSON.stringify(msg))
@@ -102,15 +109,15 @@ serviceAgent.on('connect', () => {
   }, 15000)
 })
 
-serviceAgent.on('error', error => {
-  // console.error(error.name, error.message)
+serviceAgent.on('error', errorIgnored => {
+  // log(error.name, error.message)
 })
 
 serviceAgent.on('close', hadError => {
   if (pinger) clearInterval(pinger)
   serviceAgent.destroy()
   if (hadError === true) {
-    console.log('closed with error: ', hadError)
+    log('closed with error: ', hadError)
   }
   if (!fatalError) {
     connectWithDelay(5000)
@@ -130,13 +137,17 @@ function connectWithDelay (delay) {
 connectWithDelay(500)
 
 process.on('exit', (code) => {
-  console.log(`About to exit with code: ${code}`)
+  log(`Local: ${localConnections.length}, Data: ${dataConnections.length}`)
+  localConnections.forEach(localConnection => {
+    if (localConnection && !localConnection.destroyed) localConnection.destroy()
+  })
+  dataConnections.forEach(dataConnection => {
+    if (dataConnection && !dataConnection.destroyed) dataConnection.destroy()
+  })
   serviceAgent.end()
   serviceAgent.destroy()
-  serviceAgent.unref()
 })
 
 process.on('SIGINT', () => {
   process.exit()
 })
-

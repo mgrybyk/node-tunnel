@@ -3,7 +3,7 @@
 require('dotenv').config()
 const net = require('net')
 const uuid = require('uuid/v4')
-const utils = require('./utils')
+const { tryParseJSON, log } = require('./utils')
 
 let portsFrom = parseInt(process.env.N_T_SERVER_PORTS_FROM) || 3005
 let portsTo = parseInt(process.env.N_T_SERVER_PORTS_TO) || 3009
@@ -21,15 +21,15 @@ net.createServer(serviceSocket => {
       return pingPong(serviceSocket)
     }
     // parse json and validate its structure
-    let dataJson = utils.tryParseJSON(data.toString('utf8'))
-    console.log(dataJson)
+    let dataJson = tryParseJSON(data.toString('utf8'))
+    log(dataJson)
     if (!dataJson.type || !dataJson.name) {
-      console.log('err: json data')
+      log('err: json data')
       return serviceSocket.end()
     }
 
     if (dataJson.type !== CLIENT && dataJson.type !== AGENT) {
-      console.log('err: invalid type: ' + dataJson.type)
+      log('err: invalid type: ' + dataJson.type)
       return serviceSocket.end()
     }
 
@@ -44,10 +44,10 @@ net.createServer(serviceSocket => {
     }
 
     if (connections[dataJson.name][dataJson.type][dataJson.uuid]) {
-      console.log(`found ${dataJson.name} by id!`)
+      log(`found ${dataJson.name} by id!`)
       let deadSocket = connections[dataJson.name][dataJson.type][dataJson.uuid].socket
       serviceSocket.cProps = Object.assign({}, deadSocket.cProps)
-      console.log(serviceSocket.cProps)
+      log(serviceSocket.cProps)
       delete connections[dataJson.name][dataJson.type][dataJson.uuid].socket
       connections[dataJson.name][dataJson.type][dataJson.uuid].socket = serviceSocket
       delete deadSocket.cProps
@@ -80,7 +80,7 @@ net.createServer(serviceSocket => {
         }
       }
 
-      console.log(connections)
+      log(connections)
     } else if (dataJson.type === AGENT) {
       // agent
       let agentObj = connections[dataJson.name][dataJson.type][dataJson.uuid]
@@ -101,7 +101,7 @@ net.createServer(serviceSocket => {
   serviceSocket.on('error', errIgnored => {})
   serviceSocket.on('close', hadError => {
     let cProps = serviceSocket.cProps
-    if (!cProps) return console.log('unkown connection closed')
+    if (!cProps) return log('unkown connection closed')
 
     if (cProps.type === AGENT) {
       // notify clients that agent went offline
@@ -121,7 +121,7 @@ net.createServer(serviceSocket => {
       // stop server
       let serverDead = false
       pipes[cProps.name].server.close(someArg => {
-        console.log('server stopped', cProps.name)
+        log('server stopped', cProps.name)
 
         // add port that is no longer in use
         ports.push(connections[cProps.name][AGENT].port)
@@ -173,59 +173,59 @@ function createServer (connectionName, serviceAgentUuid) {
   pipes[connectionName].server = net.createServer(socket => {
     function onData (data) {
       // parse json and validate its structure
-      let dataJson = utils.tryParseJSON(data.toString('utf8'))
-      console.log(dataJson)
+      let dataJson = tryParseJSON(data.toString('utf8'))
+      log(dataJson)
       if (!dataJson.type || !dataJson.uuid) {
-        console.log('err: socket: json data')
+        log('err: socket: json data')
         return socket.end()
       }
 
       if (dataJson.type !== CLIENT && dataJson.type !== AGENT) {
-        console.log('err: socket: invalid type: ' + dataJson.type)
+        log('err: socket: invalid type: ' + dataJson.type)
         return socket.end()
       }
 
       // if (connections[connectionName][dataJson.type].uuid !== dataJson.uuid) {
-      //   console.log('err: socket: invalid uuid:', dataJson.uuid, 'for', dataJson.type)
+      //   log('err: socket: invalid uuid:', dataJson.uuid, 'for', dataJson.type)
       //   return socket.end()
       // }
 
       socket.uuid = dataJson.uuid
-      // console.log(Object.keys(conPipes).length)
+      // log(Object.keys(conPipes).length)
       conPipes[socket.uuid] = { type: dataJson.type }
-      // console.log(Object.keys(conPipes).length)
-      // console.log(socket.uuid)
+      // log(Object.keys(conPipes).length)
+      // log(socket.uuid)
       if (dataJson.type === AGENT) {
-        // console.log('before creating pipe; by agent; client sockets:', clientSockets.length)
+        // log('before creating pipe; by agent; client sockets:', clientSockets.length)
         if (clientSockets.length > 0) {
           let clientSocket = clientSockets.shift()
-          console.log('creating pipe; by client')
+          log('creating pipe; by client')
           socket.pipe(clientSocket)
           clientSocket.pipe(socket)
           clientSocket.write('0') // just something, it doesn't matter for now
-          // console.log(Object.keys(conPipes).length)
+          // log(Object.keys(conPipes).length)
           conPipes[socket.uuid].socket = clientSocket
           if (!clientSocket.uuid || !conPipes[clientSocket.uuid]) {
-            console.log('DEFECT', clientSocket.uuid) // unable to reproduce this one
+            log('DEFECT', clientSocket.uuid) // unable to reproduce this one
           } else conPipes[clientSocket.uuid].socket = socket
-          // console.log(Object.keys(conPipes).length)
+          // log(Object.keys(conPipes).length)
         } else agentSockets.push(socket)
       } else
         // client
         if (dataJson.type === CLIENT) {
-          // console.log('before creating pipe; by client; is agent sockets:', agentSockets.length)
+          // log('before creating pipe; by client; is agent sockets:', agentSockets.length)
           if (agentSockets.length > 0) {
             let agentSocket = agentSockets.shift()
-            console.log('creating pipe; by client')
+            log('creating pipe; by client')
             socket.pipe(agentSocket)
             agentSocket.pipe(socket)
-            // console.log(Object.keys(conPipes).length)
+            // log(Object.keys(conPipes).length)
             conPipes[socket.uuid].socket = agentSocket
             conPipes[agentSocket.uuid].socket = socket
-            // console.log(Object.keys(conPipes).length)
+            // log(Object.keys(conPipes).length)
           } else {
             clientSockets.push(socket)
-            // console.log('SENDING NOTIFICATION TO AGENT')
+            // log('SENDING NOTIFICATION TO AGENT')
             connections[connectionName][AGENT][serviceAgentUuid].socket.write('{ "data": true }')
           }
         }
@@ -236,18 +236,18 @@ function createServer (connectionName, serviceAgentUuid) {
     socket.on('data', onData)
 
     socket.on('error', function (errIgnored) {
-      // console.error('ERROR FROM: ', socket.remoteAddress)
-      // console.error(err.stack)
+      // log('ERROR FROM: ', socket.remoteAddress)
+      // log(err.stack)
     })
 
     socket.on('close', error => {
       if (!socket.uuid || !conPipes[socket.uuid]) return
-      if (error) console.log(`closed ${conPipes[socket.uuid].type} socket with uuid: '${socket.uuid}'`)
+      if (error) log(`closed ${conPipes[socket.uuid].type} socket with uuid: '${socket.uuid}'`)
       if (conPipes[socket.uuid].socket) {
         socket.unpipe(conPipes[socket.uuid].socket)
         conPipes[socket.uuid].socket.unpipe(socket)
       }
-      // console.log(socket.destroyed, conPipes[socket.uuid].socket ? conPipes[socket.uuid].socket.destroyed : 'yes')
+      // log(socket.destroyed, conPipes[socket.uuid].socket ? conPipes[socket.uuid].socket.destroyed : 'yes')
       delete conPipes[socket.uuid]
     })
   }).listen(connections[connectionName][AGENT][serviceAgentUuid].port)
@@ -255,7 +255,7 @@ function createServer (connectionName, serviceAgentUuid) {
 
 
 process.on('exit', (code) => {
-  console.log(`Pipes: ${Object.keys(pipes).length}`)
+  log(`Pipes: ${Object.keys(pipes).length}`)
   let connectionsKilled = 0
   Object.keys(pipes).forEach(name => {
     if (pipes[name].server) pipes[name].server.close()
@@ -288,7 +288,7 @@ process.on('exit', (code) => {
     }
   })
 
-  console.log('Killed:', connectionsKilled)
+  log('Killed:', connectionsKilled)
 })
 
 process.on('SIGINT', () => {

@@ -1,7 +1,7 @@
 require('dotenv').config()
 const net = require('net')
 const socks = require('socks5')
-const info = console.log.bind(console)
+const { log, removeElement } = require('./utils')
 
 // Create server
 // The server accepts SOCKS connections. This particular server acts as a proxy.
@@ -14,19 +14,19 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
   // WARN: it just a simply proxy, no encryption, not secure!!
   sockets.push(socket)
   var proxy = net.createConnection({ port: port, host: address, localAddress: process.argv[2] || undefined }, proxyReady)
-  proxies.push[proxy]
+  proxies.push(proxy)
   var localAddress, localPort
   proxy.on('connect', function () {
-    info('%s:%d <== %s:%d ==> %s:%d', socket.remoteAddress, socket.remotePort,
+    log('%s:%d <== %s:%d ==> %s:%d', socket.remoteAddress, socket.remotePort,
       proxy.localAddress, proxy.localPort, proxy.remoteAddress, proxy.remotePort)
     localAddress = proxy.localAddress
     localPort = proxy.localPort
-    if (blockLocal && (proxy.remoteAddress.startsWith('10.') 
-    	|| proxy.remoteAddress.startsWith('127.')
-    	|| proxy.remoteAddress.startsWith('0.')
-    	|| proxy.remoteAddress.startsWith('239.')
-    	|| proxy.remoteAddress.startsWith('240.'))) {
-    	proxy.destroy()
+    if (blockLocal && (proxy.remoteAddress.startsWith('10.') ||
+      proxy.remoteAddress.startsWith('127.') ||
+      proxy.remoteAddress.startsWith('0.') ||
+      proxy.remoteAddress.startsWith('239.') ||
+      proxy.remoteAddress.startsWith('240.'))) {
+      proxy.destroy()
     }
   })
   socket.on('drain', function () {
@@ -34,7 +34,7 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
   })
   proxy.on('data', function (d) {
     try {
-      // console.log('receiving ' + d.length + ' bytes from proxy');
+      // log('receiving ' + d.length + ' bytes from proxy');
       if (!socket.write(d)) {
         proxy.pause()
 
@@ -50,7 +50,7 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
   socket.on('data', function (d) {
     // If the application tries to send data before the proxy is ready, then that is it's own problem.
     try {
-      // console.log('sending ' + d.length + ' bytes to proxy');
+      // log('sending ' + d.length + ' bytes to proxy');
       if (!proxy.write(d)) {
         socket.pause()
 
@@ -61,30 +61,30 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
     } catch (err) { }
   })
 
-  proxy.on('error', errIgnored => { }) // console.log('Ignore proxy error');
+  proxy.on('error', errIgnored => { }) // log('Ignore proxy error');
 
   proxy.on('close', hadError => {
     try {
-      proxies.filter(element => element !== proxy)
+      removeElement(proxies, proxy)
       if (localAddress && localPort) {
-        console.log('The proxy %s:%d closed', localAddress, localPort)
+        log('The proxy %s:%d closed', localAddress, localPort)
       } else {
-        console.error('Connect to %s:%d failed', address, port, hadError)
+        log('Connect to %s:%d failed', address, port, hadError)
       }
       if (!socket.destroyed) socket.end()
     } catch (err) { }
   })
 
-  socket.on('error', errIgnored => {})
+  socket.on('error', errIgnored => { })
   socket.on('close', function (hadError) {
     try {
-	  sockets.filter(element => element !== socket)
+      removeElement(sockets, socket)
       if (this.proxy !== undefined) {
         proxy.removeAllListeners('data')
         if (!proxy.destroyed) proxy.end()
       }
     } catch (err) {
-      console.error('The socket %s:%d closed', socket.remoteAddress, socket.remotePort, hadError)
+      log('The socket %s:%d closed', socket.remoteAddress, socket.remotePort, hadError)
     }
   }.bind(this))
 }, process.env.N_T_PROXY_USER && process.env.N_T_PROXY_PASS && {
@@ -93,11 +93,11 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
 })
 
 server.on('error', function (e) {
-  console.error('SERVER ERROR: %j', e)
+  log('SERVER ERROR: %j', e)
   if (e.code === 'EADDRINUSE') {
-    console.log('Address in use, retrying in 10 seconds...')
+    log('Address in use, retrying in 10 seconds...')
     setTimeout(function () {
-      console.log('Reconnecting to %s:%s', HOST, PORT)
+      log('Reconnecting to %s:%s', HOST, PORT)
       server.close()
       server.listen(PORT, HOST)
     }, 10000)
@@ -106,12 +106,12 @@ server.on('error', function (e) {
 server.listen(PORT, HOST)
 
 process.on('exit', (code) => {
-  console.log(`Sockets: ${sockets.length}, Proxies: ${proxies.length}`)
+  log(`Sockets: ${sockets.length}, Proxies: ${proxies.length}`)
   proxies.forEach(proxy => {
-  	if (proxy && !proxy.destroyed) proxy.destroy()
+    if (proxy && !proxy.destroyed) proxy.destroy()
   })
   sockets.forEach(socket => {
-  	if (socket && !socket.destroyed) socket.destroy()
+    if (socket && !socket.destroyed) socket.destroy()
   })
 })
 
