@@ -1,7 +1,7 @@
 require('dotenv').config()
 const net = require('net')
 const socks = require('socks5')
-const { log, removeElement } = require('./utils')
+const { log, removeElement } = require('../utils')
 
 // Create server
 // The server accepts SOCKS connections. This particular server acts as a proxy.
