@@ -7,16 +7,27 @@ const info = console.log.bind(console)
 // The server accepts SOCKS connections. This particular server acts as a proxy.
 const HOST = process.env.N_T_PROXY_HOST || '127.0.0.1'
 const PORT = process.env.N_T_PROXY_PORT || '8888'
+const blockLocal = process.env.N_T_PROXY_BLOCK_LOCAL === 'true'
+let proxies = []
+let sockets = []
 const server = socks.createServer(function (socket, port, address, proxyReady) {
   // WARN: it just a simply proxy, no encryption, not secure!!
-
+  sockets.push(socket)
   var proxy = net.createConnection({ port: port, host: address, localAddress: process.argv[2] || undefined }, proxyReady)
+  proxies.push[proxy]
   var localAddress, localPort
   proxy.on('connect', function () {
     info('%s:%d <== %s:%d ==> %s:%d', socket.remoteAddress, socket.remotePort,
       proxy.localAddress, proxy.localPort, proxy.remoteAddress, proxy.remotePort)
     localAddress = proxy.localAddress
     localPort = proxy.localPort
+    if (blockLocal && (proxy.remoteAddress.startsWith('10.') 
+    	|| proxy.remoteAddress.startsWith('127.')
+    	|| proxy.remoteAddress.startsWith('0.')
+    	|| proxy.remoteAddress.startsWith('239.')
+    	|| proxy.remoteAddress.startsWith('240.'))) {
+    	proxy.destroy()
+    }
   })
   socket.on('drain', function () {
     if (proxy.isPaused()) proxy.resume()
@@ -54,6 +65,7 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
 
   proxy.on('close', hadError => {
     try {
+      proxies.filter(element => element !== proxy)
       if (localAddress && localPort) {
         console.log('The proxy %s:%d closed', localAddress, localPort)
       } else {
@@ -66,6 +78,7 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
   socket.on('error', errIgnored => {})
   socket.on('close', function (hadError) {
     try {
+	  sockets.filter(element => element !== socket)
       if (this.proxy !== undefined) {
         proxy.removeAllListeners('data')
         if (!proxy.destroyed) proxy.end()
@@ -91,3 +104,17 @@ server.on('error', function (e) {
   }
 })
 server.listen(PORT, HOST)
+
+process.on('exit', (code) => {
+  console.log(`Sockets: ${sockets.length}, Proxies: ${proxies.length}`)
+  proxies.forEach(proxy => {
+  	if (proxy && !proxy.destroyed) proxy.destroy()
+  })
+  sockets.forEach(socket => {
+  	if (socket && !socket.destroyed) socket.destroy()
+  })
+})
+
+process.on('SIGINT', () => {
+  process.exit()
+})

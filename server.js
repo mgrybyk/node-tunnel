@@ -252,3 +252,45 @@ function createServer (connectionName, serviceAgentUuid) {
     })
   }).listen(connections[connectionName][AGENT][serviceAgentUuid].port)
 }
+
+
+process.on('exit', (code) => {
+  console.log(`Pipes: ${Object.keys(pipes).length}`)
+  let connectionsKilled = 0
+  Object.keys(pipes).forEach(name => {
+    if (pipes[name].server) pipes[name].server.close()
+    if (pipes[name].pipes) {
+      Object.keys(pipes[name].pipes).forEach(pipeUuid => {
+        if (pipes[name].pipes[pipeUuid]) {
+          pipes[name].pipes[pipeUuid].socket.unpipe()
+          pipes[name].pipes[pipeUuid].socket.destroy()
+          connectionsKilled++
+        }
+      })
+    }
+    if (connections[name]) {
+      if (connections[name].AGENT) {
+        Object.keys(connections[name].AGENT).forEach(agentUuid => {
+          if (connections[name].AGENT[agentUuid]) {
+            connections[name].AGENT[agentUuid].destroy()
+            connectionsKilled++
+          }
+        })
+      }
+      if (connections[name].CLIENT) {
+        Object.keys(connections[name].CLIENT).forEach(clientUuid => {
+          if (connections[name].CLIENT[clientUuid]) {
+            connections[name].CLIENT[clientUuid].destroy()
+            connectionsKilled++
+          }
+        })
+      }
+    }
+  })
+
+  console.log('Killed:', connectionsKilled)
+})
+
+process.on('SIGINT', () => {
+  process.exit()
+})
