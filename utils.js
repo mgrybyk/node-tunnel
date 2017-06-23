@@ -1,6 +1,11 @@
 'use strict'
 
-require('dotenv').config()
+let dotEnvConfig = {}
+if (process.argv[2]) {
+  dotEnvConfig.path = process.argv[2]
+}
+require('dotenv').config(dotEnvConfig)
+
 const disableLogging = process.env.N_T_DISABLE_LOGGING === 'true'
 
 module.exports.tryParseJSON = function (json, reviver) {

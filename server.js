@@ -1,6 +1,5 @@
 'use strict'
 
-require('dotenv').config()
 const net = require('net')
 const uuid = require('uuid/v4')
 const { tryParseJSON, log } = require('./utils')

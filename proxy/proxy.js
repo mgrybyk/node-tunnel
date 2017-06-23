@@ -1,7 +1,8 @@
-require('dotenv').config()
 const net = require('net')
 const socks = require('socks5')
 const { log, removeElement } = require('../utils')
+const blockedList = ['0.', '10.', '127.', '169.254.', '224.0.0.']
+for (let idx = 239; idx < 256; idx++) { blockedList.push(`${idx}.`) }
 
 // Create server
 // The server accepts SOCKS connections. This particular server acts as a proxy.
@@ -21,12 +22,10 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
       proxy.localAddress, proxy.localPort, proxy.remoteAddress, proxy.remotePort)
     localAddress = proxy.localAddress
     localPort = proxy.localPort
-    if (blockLocal && (proxy.remoteAddress.startsWith('10.') ||
-      proxy.remoteAddress.startsWith('127.') ||
-      proxy.remoteAddress.startsWith('0.') ||
-      proxy.remoteAddress.startsWith('239.') ||
-      proxy.remoteAddress.startsWith('240.'))) {
-      proxy.destroy()
+    if (blockLocal) {
+      blockedList.forEach(element => {
+        if (proxy.remoteAddress.startsWith(element)) { proxy.destroy() }
+      })
     }
   })
   socket.on('drain', function () {
