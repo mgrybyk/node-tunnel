@@ -14,7 +14,7 @@ let sockets = []
 const server = socks.createServer(function (socket, port, address, proxyReady) {
   // WARN: it just a simply proxy, no encryption, not secure!!
   sockets.push(socket)
-  var proxy = net.createConnection({ port: port, host: address, localAddress: process.argv[2] || undefined }, proxyReady)
+  var proxy = net.createConnection({ port: port, host: address, localAddress: undefined }, proxyReady)
   proxies.push(proxy)
   var localAddress, localPort
   proxy.on('connect', function () {
