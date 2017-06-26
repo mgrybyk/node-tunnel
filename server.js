@@ -99,6 +99,7 @@ net.createServer(serviceSocket => {
   serviceSocket.on('data', onData)
   serviceSocket.on('error', errIgnored => {})
   serviceSocket.on('close', hadError => {
+    serviceSocket.removeListener('data')
     let cProps = serviceSocket.cProps
     if (!cProps) return log('unkown connection closed')
 
