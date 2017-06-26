@@ -6,7 +6,7 @@ const { tryParseJSON, log } = require('./utils')
 
 let portsFrom = parseInt(process.env.N_T_SERVER_PORTS_FROM) || 3005
 let portsTo = parseInt(process.env.N_T_SERVER_PORTS_TO) || 3009
-const ports = Array(portsTo - portsFrom).fill().map((e, i) => i + portsFrom)
+let ports = Array(portsTo - portsFrom).fill().map((e, i) => i + portsFrom)
 
 const AGENT = 'agent'
 const CLIENT = 'client'
@@ -84,9 +84,10 @@ net.createServer(serviceSocket => {
       // agent
       let agentObj = connections[dataJson.name][dataJson.type][dataJson.uuid]
       if (!agentObj.port) { // why do I check this??
-        agentObj.port = ports.shift()
-        createServer(dataJson.name, dataJson.uuid)
         agentObj.socket = serviceSocket
+        agentObj.port = ports.shift()
+        if (!agentObj.port) serviceSocket.destroy()
+        createServer(dataJson.name, dataJson.uuid)
         notify(serviceSocket, agentObj.port, dataJson.uuid)
         if (!connections[dataJson.name][CLIENT]) return
         Object.keys(connections[dataJson.name][CLIENT]).forEach(clientUuid => {
