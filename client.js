@@ -21,12 +21,12 @@ let dataJson
 net.createServer(localSocket => {
   let isDataClientConnected = false
   let firstData = null
-  localConnections.push(localSocket)
 
-  if (!isDataClient) {
+  if (!isDataClient || !dataJson) {
     return localSocket.destroy()
   }
 
+  localConnections.push(localSocket)
   let dataClient = new net.Socket()
   dataClient.uuid = 'client-' + uuid()
   dataConnections.push(dataClient)
