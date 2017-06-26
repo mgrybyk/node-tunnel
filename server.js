@@ -86,7 +86,8 @@ net.createServer(serviceSocket => {
       if (!agentObj.port) { // why do I check this??
         agentObj.socket = serviceSocket
         agentObj.port = ports.shift()
-        if (!agentObj.port) serviceSocket.destroy()
+        if (!agentObj.port) { return serviceSocket.destroy() }
+        else console.log(ports)
         createServer(dataJson.name, dataJson.uuid)
         notify(serviceSocket, agentObj.port, dataJson.uuid)
         if (!connections[dataJson.name][CLIENT]) return
@@ -127,7 +128,7 @@ net.createServer(serviceSocket => {
         log('server stopped', cProps.name)
 
         // add port that is no longer in use
-        ports.push(connections[cProps.name][AGENT].port)
+        ports.push(connections[cProps.name][AGENT][cProps.uuid].port)
 
         // delete agent from connections
         serverDead = true
