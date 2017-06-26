@@ -87,7 +87,6 @@ net.createServer(serviceSocket => {
         agentObj.socket = serviceSocket
         agentObj.port = ports.shift()
         if (!agentObj.port) { return serviceSocket.destroy() }
-        else console.log(ports)
         createServer(dataJson.name, dataJson.uuid)
         notify(serviceSocket, agentObj.port, dataJson.uuid)
         if (!connections[dataJson.name][CLIENT]) return
