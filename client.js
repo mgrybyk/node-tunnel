@@ -126,10 +126,16 @@ connectWithDelay(500)
 process.on('exit', (code) => {
   log(`Local: ${localConnections.length}, Data: ${dataConnections.length}`)
   localConnections.forEach(localConnection => {
-    if (localConnection && !localConnection.destroyed) localConnection.destroy()
+    if (localConnection && !localConnection.destroyed) {
+      localConnection.unpipe()
+      localConnection.destroy()
+    }
   })
   dataConnections.forEach(dataConnection => {
-    if (dataConnection && !dataConnection.destroyed) dataConnection.destroy()
+    if (dataConnection && !dataConnection.destroyed) {
+      dataConnection.unpipe()
+      dataConnection.destroy()
+    }
   })
   serviceClient.end()
   serviceClient.destroy()
