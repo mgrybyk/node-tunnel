@@ -264,7 +264,7 @@ process.on('exit', (code) => {
     if (pipes[name].server) pipes[name].server.close()
     if (pipes[name].pipes) {
       Object.keys(pipes[name].pipes).forEach(pipeUuid => {
-        if (pipes[name].pipes[pipeUuid]) {
+        if (pipes[name].pipes[pipeUuid] && pipes[name].pipes[pipeUuid].socket) {
           pipes[name].pipes[pipeUuid].socket.unpipe()
           pipes[name].pipes[pipeUuid].socket.destroy()
           connectionsKilled++
@@ -274,16 +274,18 @@ process.on('exit', (code) => {
     if (connections[name]) {
       if (connections[name].AGENT) {
         Object.keys(connections[name].AGENT).forEach(agentUuid => {
-          if (connections[name].AGENT[agentUuid]) {
-            connections[name].AGENT[agentUuid].destroy()
+          let agentObj = connections[name].AGENT[agentUuid]
+          if (agentObj && agentObj.socket && !agentObj.socket.destroyed) {
+            agentObj.socket.destroy()
             connectionsKilled++
           }
         })
       }
       if (connections[name].CLIENT) {
         Object.keys(connections[name].CLIENT).forEach(clientUuid => {
-          if (connections[name].CLIENT[clientUuid]) {
-            connections[name].CLIENT[clientUuid].destroy()
+          let clientObj = connections[name].CLIENT[clientUuid]
+          if (clientObj && clientObj.socket && !clientObj.socket.destroyed) {
+            clientObj.socket.destroy()
             connectionsKilled++
           }
         })
