@@ -113,8 +113,10 @@ net.createServer(serviceSocket => {
       pipes[cProps.name].server.maxConnections = 0
       if (pipes[cProps.name].pipes) {
         Object.keys(pipes[cProps.name].pipes).forEach(pipeUuid => {
-          pipes[cProps.name].pipes[pipeUuid].socket.unpipe()
-          pipes[cProps.name].pipes[pipeUuid].socket.destroy()
+          if (pipes[cProps.name].pipes[pipeUuid].socket) {
+            pipes[cProps.name].pipes[pipeUuid].socket.unpipe()
+            pipes[cProps.name].pipes[pipeUuid].socket.destroy()
+          }
         })
       }
       // stop server
