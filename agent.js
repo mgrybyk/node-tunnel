@@ -114,6 +114,7 @@ serviceAgent.on('error', errorIgnored => {
 
 serviceAgent.on('close', hadError => {
   if (pinger) clearInterval(pinger)
+  dataPort = undefined
   serviceAgent.destroy()
   if (hadError === true) {
     log('closed with error: ', hadError)
