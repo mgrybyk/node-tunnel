@@ -32,35 +32,23 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
     if (proxy.isPaused()) proxy.resume()
   })
   proxy.on('data', function (d) {
-    try {
-      // log('receiving ' + d.length + ' bytes from proxy');
       if (!socket.write(d)) {
         proxy.pause()
-
-        setTimeout(function () {
-          if (!proxy.destroyed && proxy.isPaused()) proxy.resume()
-        }, 100)
+        if (!proxy.destroyed && proxy.isPaused()) proxy.resume()
       }
-    } catch (err) { }
   })
   proxy.on('drain', function () {
     if (socket.isPaused()) socket.resume()
   })
   socket.on('data', function (d) {
     // If the application tries to send data before the proxy is ready, then that is it's own problem.
-    try {
-      // log('sending ' + d.length + ' bytes to proxy');
       if (!proxy.write(d)) {
         socket.pause()
-
-        setTimeout(function () {
-          if (!socket.destroyed && socket.isPaused()) socket.resume()
-        }, 100)
+        if (!socket.destroyed && socket.isPaused()) socket.resume()
       }
-    } catch (err) { }
   })
 
-  proxy.on('error', errIgnored => { }) // log('Ignore proxy error');
+  proxy.on('error', errIgnored => { })
 
   proxy.on('close', hadError => {
     try {
@@ -86,9 +74,6 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
       log('The socket %s:%d closed', socket.remoteAddress, socket.remotePort, hadError)
     }
   }.bind(this))
-}, process.env.N_T_PROXY_USER && process.env.N_T_PROXY_PASS && {
-  username: process.env.N_T_PROXY_USER,
-  password: process.env.N_T_PROXY_PASS
 })
 
 server.on('error', function (e) {
