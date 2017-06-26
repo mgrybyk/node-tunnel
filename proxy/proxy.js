@@ -29,51 +29,45 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
     }
   })
   socket.on('drain', function () {
-    if (proxy.isPaused()) proxy.resume()
+    if (proxy && proxy.isPaused()) proxy.resume()
   })
   proxy.on('data', function (d) {
-      if (!socket.write(d)) {
+      if (socket && !socket.write(d)) {
         proxy.pause()
         if (!proxy.destroyed && proxy.isPaused()) proxy.resume()
       }
   })
   proxy.on('drain', function () {
-    if (socket.isPaused()) socket.resume()
+    if (socket && socket.isPaused()) socket.resume()
   })
   socket.on('data', function (d) {
     // If the application tries to send data before the proxy is ready, then that is it's own problem.
-      if (!proxy.write(d)) {
+      if (proxy && !proxy.write(d)) {
         socket.pause()
         if (!socket.destroyed && socket.isPaused()) socket.resume()
       }
   })
 
   proxy.on('error', errIgnored => { })
-
   proxy.on('close', hadError => {
-    try {
-      removeElement(proxies, proxy)
-      if (localAddress && localPort) {
-        log('The proxy %s:%d closed', localAddress, localPort)
-      } else {
-        log('Connect to %s:%d failed', address, port, hadError)
-      }
-      if (!socket.destroyed) socket.end()
-    } catch (err) { }
+    removeElement(proxies, proxy)
+    if (!localAddress || !localPort || hadError) {
+      log('Connect to %s:%d failed', address, port, hadError)
+    }
+    if (socket) {
+      if (!socket.destroyed) socket.destroy()
+      socket.removeAllListeners('drain').removeAllListeners('data')
+    }
   })
 
   socket.on('error', errIgnored => { })
-  socket.on('close', function (hadError) {
-    try {
-      removeElement(sockets, socket)
-      if (this.proxy !== undefined) {
-        proxy.removeAllListeners('data')
-        if (!proxy.destroyed) proxy.end()
-      }
-    } catch (err) {
-      log('The socket %s:%d closed', socket.remoteAddress, socket.remotePort, hadError)
+  socket.on('close', hadError => {
+    removeElement(sockets, socket)
+    if (proxy) {
+      if (!proxy.destroyed) proxy.destroy()
+      proxy.removeAllListeners('drain').removeAllListeners('data')
     }
-  }.bind(this))
+  })
 })
 
 server.on('error', function (e) {
