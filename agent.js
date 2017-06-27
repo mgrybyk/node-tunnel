@@ -16,6 +16,7 @@ let fatalError = false
 let serviceUuid
 let dataPort
 
+let connectionToServerLost = false
 let localConnections = []
 let dataConnections = []
 
@@ -28,7 +29,7 @@ serviceAgent.on('data', data => {
     if (!value) return
     let dataJson = tryParseJSON(value + '}')
     if (dataJson.error) {
-      log(dataJson.error)
+      log.info(dataJson.error)
       fatalError = true
       return serviceAgent.destroy()
     }
@@ -36,26 +37,25 @@ serviceAgent.on('data', data => {
     if (dataJson.uuid && dataJson.port) {
       serviceUuid = dataJson.uuid
       dataPort = dataJson.port
-      return log('setting port and uuid:', dataJson.port, dataJson.uuid)
+      return log.debug('setting port and uuid:', dataJson.port, dataJson.uuid)
     }
     if (!dataJson.data || !dataPort) {
-      log('fuck', dataJson)
-      return
+      return log.debug('todo', dataJson)
     }
 
-    log('service agent', dataJson)
+    log.debug('service agent', dataJson)
     let dataAgent = new net.Socket()
     dataConnections.push(dataAgent)
     dataAgent.uuid = 'agent-' + uuid()
 
     dataAgent.on('close', error => {
       removeElement(dataConnections, dataAgent)
-      if (error) log(`closed dataAgent '${dataAgent.uuid}'`)
+      if (error) log.debug(`closed dataAgent '${dataAgent.uuid}'`)
     })
-    dataAgent.on('error', errorIgnored => {})
+    dataAgent.on('error', err => log.err('DATA_AGENT', err.name || err.code, err.message))
     // let currentCounter = ++agentCounter
     dataAgent.on('connect', () => {
-      log('data agent connected!')
+      log.debug('data agent connected!')
       dataAgent.write(`{ "type": "agent", "uuid": "${dataAgent.uuid}" }`)
       let localSocket = new net.Socket()
       localConnections.push(localSocket)
@@ -67,7 +67,7 @@ serviceAgent.on('data', data => {
       })
 
       localSocket.on('connect', function () {
-        log('Connection to local port established.')
+        log.debug('Connection to local port established.')
 
         if (dataAgent.destroyed) {
           localSocket.destroy()
@@ -79,11 +79,11 @@ serviceAgent.on('data', data => {
         localSocket.write(firstData)
       })
 
-      localSocket.on('error', errIgnored => {})
+      localSocket.on('error', err => log.err('LOCAL_SOCKET', err.name || err.code, err.message))
 
       localSocket.on('close', () => {
         removeElement(localConnections, localSocket)
-        log('Connection to local port closed')
+        log.debug('Connection to local port closed')
         if (isPiped) {
           dataAgent.unpipe(localSocket)
           localSocket.unpipe(dataAgent)
@@ -98,7 +98,7 @@ serviceAgent.on('data', data => {
 
 let pinger
 serviceAgent.on('connect', () => {
-  log('Connection established.')
+  log.info('Connection to server established.')
   let msg = { type: 'agent', name: agentName }
   if (serviceUuid) msg.uuid = serviceUuid
   serviceAgent.write(JSON.stringify(msg))
@@ -108,17 +108,16 @@ serviceAgent.on('connect', () => {
   }, 15000)
 })
 
-serviceAgent.on('error', errorIgnored => {
-  // log(error.name, error.message)
-})
+serviceAgent.on('error', err => log.err('SERVICE_AGENT', err.name || err.code, err.message))
 
 serviceAgent.on('close', hadError => {
+  if (!connectionToServerLost) {
+    connectionToServerLost = true
+    log.info('Connection to server lost')
+  }
   if (pinger) clearInterval(pinger)
   dataPort = undefined
   serviceAgent.destroy()
-  if (hadError === true) {
-    log('closed with error: ', hadError)
-  }
   if (!fatalError) {
     connectWithDelay(5000)
   }
@@ -137,7 +136,7 @@ function connectWithDelay (delay) {
 connectWithDelay(500)
 
 process.on('exit', (code) => {
-  log(`Local: ${localConnections.length}, Data: ${dataConnections.length}`)
+  log.info(`Stopping agent, trying to close connetions - Local: ${localConnections.length}, Data: ${dataConnections.length}`)
   localConnections.forEach(localConnection => {
     if (localConnection && !localConnection.destroyed) {
       localConnection.unpipe()

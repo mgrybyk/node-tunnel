@@ -6,7 +6,8 @@ if (process.argv[2]) {
 }
 require('dotenv').config(dotEnvConfig)
 
-const disableLogging = process.env.N_T_DISABLE_LOGGING === 'true'
+const logDebug = process.env.N_T_LOG_DEBUG === 'true'
+const logError = process.env.N_T_LOG_ERROR === 'true'
 
 module.exports.tryParseJSON = function (json, reviver) {
   try {
@@ -24,10 +25,17 @@ module.exports.removeElement = function (array, element) {
   }
 }
 
-if (disableLogging) {
-  module.exports.log = function () { }
-} else {
-  module.exports.log = function (...args) {
-    console.log(...args)
-  }
+let log = {
+  info (...args) { console.log('INFO:', ...args) },
+  debug () {},
+  err () {}
 }
+
+if (logDebug) {
+  log.debug = (...args) => console.log('DEBUG:', ...args)
+}
+if (logError) {
+  log.err = (...args) => console.error('ERR:', ...args)
+}
+
+module.exports.log = log

@@ -18,7 +18,7 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
   proxies.push(proxy)
   var localAddress, localPort
   proxy.on('connect', function () {
-    log('%s:%d <== %s:%d ==> %s:%d', socket.remoteAddress, socket.remotePort,
+    log.debug('%s:%d <== %s:%d ==> %s:%d', socket.remoteAddress, socket.remotePort,
       proxy.localAddress, proxy.localPort, proxy.remoteAddress, proxy.remotePort)
     localAddress = proxy.localAddress
     localPort = proxy.localPort
@@ -32,27 +32,27 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
     if (proxy && proxy.isPaused()) proxy.resume()
   })
   proxy.on('data', function (d) {
-      if (socket && !socket.write(d)) {
-        proxy.pause()
-        if (!proxy.destroyed && proxy.isPaused()) proxy.resume()
-      }
+    if (socket && !socket.write(d)) {
+      proxy.pause()
+      if (!proxy.destroyed && proxy.isPaused()) proxy.resume()
+    }
   })
   proxy.on('drain', function () {
     if (socket && socket.isPaused()) socket.resume()
   })
   socket.on('data', function (d) {
     // If the application tries to send data before the proxy is ready, then that is it's own problem.
-      if (proxy && !proxy.write(d)) {
-        socket.pause()
-        if (!socket.destroyed && socket.isPaused()) socket.resume()
-      }
+    if (proxy && !proxy.write(d)) {
+      socket.pause()
+      if (!socket.destroyed && socket.isPaused()) socket.resume()
+    }
   })
 
   proxy.on('error', errIgnored => { })
   proxy.on('close', hadError => {
     removeElement(proxies, proxy)
     if (!localAddress || !localPort || hadError) {
-      log('Connect to %s:%d failed', address, port, hadError)
+      log.err('Connect to %s:%d failed', address, port, hadError)
     }
     if (socket) {
       if (!socket.destroyed) socket.destroy()
@@ -70,21 +70,15 @@ const server = socks.createServer(function (socket, port, address, proxyReady) {
   })
 })
 
-server.on('error', function (e) {
-  log('SERVER ERROR: %j', e)
-  if (e.code === 'EADDRINUSE') {
-    log('Address in use, retrying in 10 seconds...')
-    setTimeout(function () {
-      log('Reconnecting to %s:%s', HOST, PORT)
-      server.close()
-      server.listen(PORT, HOST)
-    }, 10000)
-  }
+server.on('error', err => {
+  log.info('Something went wrong with proxy server. Stopping...\n', err.name || err.code, err.message)
+  server.close()
+  process.exit(1)
 })
 server.listen(PORT, HOST)
 
 process.on('exit', (code) => {
-  log(`Sockets: ${sockets.length}, Proxies: ${proxies.length}`)
+  log.info(`Stopping proxy, trying to kill - Sockets: ${sockets.length}, Proxies: ${proxies.length}`)
   proxies.forEach(proxy => {
     if (proxy && !proxy.destroyed) proxy.destroy()
   })
