@@ -6,7 +6,7 @@ const { tryParseJSON, log } = require('./utils')
 
 let portsFrom = parseInt(process.env.N_T_SERVER_PORTS_FROM) || 3005
 let portsTo = parseInt(process.env.N_T_SERVER_PORTS_TO) || 3009
-let ports = Array(portsTo - portsFrom).fill().map((e, i) => i + portsFrom)
+let ports = Array(1 + portsTo - portsFrom).fill().map((e, i) => i + portsFrom)
 
 const AGENT = 'agent'
 const CLIENT = 'client'
