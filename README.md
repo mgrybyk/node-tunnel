@@ -87,6 +87,7 @@ dont forget to point agent to proxy port: `N_T_AGENT_DATA_PORT=8888`
 ---
 
 **NOTE**: 
+
 you can combine as you want server, agent, client instances. Example: you can have server and client on same machine with public ip.
 
 
