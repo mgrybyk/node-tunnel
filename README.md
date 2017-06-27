@@ -42,6 +42,7 @@ N_T_AGENT_NAME=test-ssh
 N_T_AGENT_DATA_HOST=some-machine
 N_T_AGENT_DATA_PORT=22
 ```
+It is better to use long client/agent names for security reasons!
 
 ### client
 
@@ -62,10 +63,48 @@ N_T_SERVER_PORT=32121
 N_T_CLIENT_NAME=test-ssh
 N_T_CLIENT_PORT=1112
 ```
+*It is better to use long client/agent names for security reasons!*
 
-finally, to open rdp/ssh connection to machine where agent is installed, connect to localhost:1111 / localhost:1112 with your rdp/ssh client correspondingly
+
+Finally, to open rdp/ssh connection to machine where agent is installed, connect to localhost:1111 / localhost:1112 with your rdp/ssh client correspondingly
+
+
+*Client port (`N_T_CLIENT_PORT`) should not be accessible from outside because everyone will access data port opened by agent! 
+If you still want/need it - feel free.*
+
+
+### proxy
+
+To test application and for personal purposes I'm using proxy/proxy which is SOCKS proxy server.
+I don't recommend to use it as far as it is not secure and probably has some other defects, but it works.
+If you still want to use it with this application - run `proxy/proxy` on host with agent, `.env` example:
+```
+N_T_PROXY_HOST=localhost
+N_T_PROXY_PORT=8888
+```
+dont forget to point agent to proxy port: `N_T_AGENT_DATA_PORT=8888`
 
 ---
 
-NOTE: 
+**NOTE**: 
 you can combine as you want server, agent, client instances. Example: you can have server and client on same machine with public ip.
+
+
+*Client port (`N_T_CLIENT_PORT`) should not be accessible from outside because everyone will access data port opened by agent! 
+If you still want/need it - feel free.*
+
+---
+
+## FAQ
+
+**Q**: I have public IP according to my provider config, but agent can't connect to server.
+
+**A**: Multiple issues possible, like: firewalls, your host is connected to router and no virtual server is configured for server ports, etc.
+
+**Q**: I have no server with public IP, what should I do?
+
+**A**: You can create any instance where it is possible to run Node.js and open at least two ports, example: https://aws.amazon.com/free/
+
+**Q**: Next plans?
+
+**A**: fix defects, increase secuirty, your suggestions :).
