@@ -8,7 +8,7 @@ for (let idx = 239; idx < 256; idx++) { blockedList.push(`${idx}.`) }
 // The server accepts SOCKS connections. This particular server acts as a proxy.
 const HOST = process.env.N_T_PROXY_HOST || '127.0.0.1'
 const PORT = process.env.N_T_PROXY_PORT || '8888'
-const blockLocal = process.env.N_T_PROXY_BLOCK_LOCAL === 'true'
+const blockLocal = process.env.N_T_PROXY_BLOCK_LOCAL !== 'false'
 let proxies = []
 let sockets = []
 const server = socks.createServer(function (socket, port, address, proxyReady) {
