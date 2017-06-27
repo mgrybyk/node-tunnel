@@ -7,10 +7,7 @@ const { tryParseJSON, log } = require('./utils')
 let portsFrom = parseInt(process.env.N_T_SERVER_PORTS_FROM) || 3005
 let portsTo = parseInt(process.env.N_T_SERVER_PORTS_TO) || 3009
 let ports = Array(1 + portsTo - portsFrom).fill().map((e, i) => i + portsFrom)
-<<<<<<< HEAD
 const serviceServerPort = parseInt(process.env.N_T_SERVER_PORT) || 1337
-=======
->>>>>>> origin/master
 
 const AGENT = 'agent'
 const CLIENT = 'client'
