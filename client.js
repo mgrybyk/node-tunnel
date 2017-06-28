@@ -26,10 +26,6 @@ let localServer = net.createServer({ pauseOnConnect: true }, localSocket => {
     return localSocket.destroy()
   }
 
-  localSocket.on('connect', listener => {
-    console.log('ls: connn')
-  })
-
   localConnections.push(localSocket)
   let dataClient = new net.Socket()
   dataClient.uuid = 'client-' + uuid()
