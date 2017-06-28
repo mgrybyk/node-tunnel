@@ -53,30 +53,23 @@ serviceAgent.on('data', data => {
       if (error) log.debug(`closed dataAgent '${dataAgent.uuid}'`)
     })
     dataAgent.on('error', err => log.err('DATA_AGENT', err.name || err.code, err.message))
-    // let currentCounter = ++agentCounter
     dataAgent.on('connect', () => {
       log.debug('data agent connected!')
-      dataAgent.write(`{ "type": "agent", "uuid": "${dataAgent.uuid}" }`)
       let localSocket = new net.Socket()
       localConnections.push(localSocket)
       let isPiped = false
-      let firstData = ''
-      dataAgent.once('data', data => {
-        firstData = data
-        localSocket.connect(pipePort, pipeHost)
-      })
+      localSocket.connect(pipePort, pipeHost)
 
       localSocket.on('connect', function () {
         log.debug('Connection to local port established.')
-
         if (dataAgent.destroyed) {
           localSocket.destroy()
         } else {
+          dataAgent.write(`{ "type": "agent", "uuid": "${dataAgent.uuid}" }`)
           dataAgent.pipe(localSocket)
           localSocket.pipe(dataAgent)
           isPiped = true
         }
-        localSocket.write(firstData)
       })
 
       localSocket.on('error', err => log.err('LOCAL_SOCKET', err.name || err.code, err.message))

@@ -19,13 +19,16 @@ let isDataClient = false
 let dataJson
 
 // local
-let localServer = net.createServer(localSocket => {
+let localServer = net.createServer({ pauseOnConnect: true }, localSocket => {
   let isDataClientConnected = false
-  let firstData = null
 
   if (!isDataClient || !dataJson) {
     return localSocket.destroy()
   }
+
+  localSocket.on('connect', listener => {
+    console.log('ls: connn')
+  })
 
   localConnections.push(localSocket)
   let dataClient = new net.Socket()
@@ -38,7 +41,7 @@ let localServer = net.createServer(localSocket => {
     dataClient.pipe(localSocket)
     localSocket.pipe(dataClient)
     isDataClientConnected = true
-    if (firstData) dataClient.write(firstData)
+    localSocket.resume()
   })
 
   dataClient.connect(dataJson.port, serverHost)
@@ -49,14 +52,6 @@ let localServer = net.createServer(localSocket => {
     if (localSocket && !localSocket.destroyed) localSocket.destroy()
   })
   dataClient.on('error', err => log.err('DATA_CLIENT', err.name || err.code, err.message))
-
-  function localSocketDataLsnr (data) {
-    if (!isDataClientConnected) {
-      firstData = data
-    } else localSocket.removeListener('data', localSocketDataLsnr)
-  }
-  localSocket.on('data', localSocketDataLsnr)
-
   localSocket.on('error', err => log.err('LOCAL_SOCKET', err.name || err.code, err.message))
 
   localSocket.on('close', hadError => {
