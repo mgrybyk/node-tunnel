@@ -123,12 +123,12 @@ let serviceServer = net.createServer(serviceSocket => {
       }
       // stop server
       let serverDead = false
+      let portToRelease = connections[cProps.name][AGENT][cProps.uuid].port
       pipes[cProps.name].server.close(someArg => {
         // add port that is no longer in use
-        let releasedPort = connections[cProps.name][AGENT][cProps.uuid].port
-        ports.push(releasedPort)
+        ports.push(portToRelease)
 
-        log.info(cProps.type, cProps.name, 'went offilne and release port', releasedPort)
+        log.info(cProps.type, cProps.name, 'went offilne and release port', portToRelease)
 
         // delete agent from connections
         serverDead = true
