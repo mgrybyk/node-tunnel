@@ -10,6 +10,9 @@ Allows you to open to forward any custom port (rdp, ssh, proxies, whatever) from
 1. clone repo
 2. npm i
 
+**WARN: data is NOT encrpyted at the moment, except service messages!**
+
+
 ### server
 
 install server on machine with public ip
@@ -73,6 +76,20 @@ Finally, to open rdp/ssh connection to machine where agent is installed, connect
 If you still want/need it - feel free.*
 
 
+### set service messages crypt key (not data!)
+
+All service messages are encrypted with default key using **aes128**. To change override default key edit `.env.` file:
+```
+N_T_CRYPT_KEY=YOUR_ENCRYPTION_KEY
+```
+N_T_CRYPT_KEY should be the same for server, all agents and clients.
+
+
+### data encryption  (not implemented yet)
+
+TODO.
+Currently having problems with buffer length. Once message is encrypted its length increases and single socket message splits to two (or more?) messages. Can't find out the way to join them back properly :(
+
 ### proxy
 
 To test application and for personal purposes I'm using proxy/proxy which is SOCKS proxy server.
@@ -106,6 +123,10 @@ If you still want/need it - feel free.*
 
 **A**: You can create any instance where it is possible to run Node.js and open at least two ports, example: https://aws.amazon.com/free/
 
+**Q**: I have multiple messages on client/agent side "Connection to server established."
+
+**A**: You have to set same *N_T_CRYPT_KEY* for server and all agents/clients.
+
 **Q**: Next plans?
 
-**A**: fix defects, increase secuirty, your suggestions :).
+**A**: fix defects, cleanup code, increase secuirty, your suggestions :).
