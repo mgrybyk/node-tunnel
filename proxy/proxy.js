@@ -1,3 +1,5 @@
+'use strict'
+
 const net = require('net')
 const socks = require('socks5')
 const { log, removeElement } = require('../utils')

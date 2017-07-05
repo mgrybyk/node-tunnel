@@ -1,10 +1,14 @@
 'use strict'
 
 const net = require('net')
-const { tryParseJSON, log, removeElement } = require('./utils')
+const { tryParseJSON, log, removeElement, crypt } = require('./utils')
 const uuid = require('uuid/v4')
 
 const agentName = process.env.N_T_AGENT_NAME || 'dbg'
+if (agentName.length > 128) {
+  log.info('Name should not be more than 128 symbols length.')
+  process.exit(1)
+}
 const serverHost = process.env.N_T_SERVER_HOST || 'localhost'
 const serverPort = parseInt(process.env.N_T_SERVER_PORT) || 1337
 
@@ -23,8 +27,12 @@ let dataConnections = []
 // remote
 let serviceAgent = new net.Socket()
 
-serviceAgent.on('data', data => {
-  let dataArr = data.toString('utf8').split('}')
+serviceAgent.on('data', dataEnc => {
+  // try decrypt otherwise - kill
+  let data = crypt.decrypt(dataEnc.toString('utf8'))
+  if (data === null) return
+
+  let dataArr = data.split('}')
   dataArr.forEach(value => {
     if (!value) return
     let dataJson = tryParseJSON(value + '}')
@@ -65,7 +73,7 @@ serviceAgent.on('data', data => {
         if (dataAgent.destroyed) {
           localSocket.destroy()
         } else {
-          dataAgent.write(`{ "type": "agent", "uuid": "${dataAgent.uuid}" }`)
+          dataAgent.write(crypt.encrypt(`{ "type": "agent", "uuid": "${dataAgent.uuid}" }`))
           dataAgent.pipe(localSocket)
           localSocket.pipe(dataAgent)
           isPiped = true
@@ -94,10 +102,10 @@ serviceAgent.on('connect', () => {
   log.info('Connection to server established.')
   let msg = { type: 'agent', name: agentName }
   if (serviceUuid) msg.uuid = serviceUuid
-  serviceAgent.write(JSON.stringify(msg))
+  serviceAgent.write(crypt.encrypt(JSON.stringify(msg)))
   if (pinger) clearInterval(pinger)
   pinger = setInterval(() => {
-    serviceAgent.write('0')
+    serviceAgent.write(crypt.encrypt('' + Math.random()))
   }, 15000)
 })
 

@@ -1,10 +1,14 @@
 'use strict'
 
 const net = require('net')
-const { tryParseJSON, log, removeElement } = require('./utils')
+const { tryParseJSON, log, removeElement, crypt } = require('./utils')
 const uuid = require('uuid/v4')
 
 const clientName = process.env.N_T_CLIENT_NAME || 'dbg'
+if (clientName.length > 128) {
+  log.info('Name should not be more than 128 symbols length.')
+  process.exit(1)
+}
 const serverHost = process.env.N_T_SERVER_HOST || 'localhost'
 const serverPort = parseInt(process.env.N_T_SERVER_PORT) || 1337
 const localPort = parseInt(process.env.N_T_CLIENT_PORT) || 8000
@@ -31,7 +35,7 @@ let localServer = net.createServer({ pauseOnConnect: true }, localSocket => {
   dataClient.uuid = 'client-' + uuid()
   dataConnections.push(dataClient)
   dataClient.on('connect', () => {
-    dataClient.write(`{ "type": "client", "uuid": "${dataClient.uuid}" }`)
+    dataClient.write(crypt.encrypt(`{ "type": "client", "uuid": "${dataClient.uuid}" }`))
   })
   dataClient.once('data', data => {
     dataClient.pipe(localSocket)
@@ -67,7 +71,11 @@ localServer.on('error', err => {
   process.exit(1)
 })
 
-serviceClient.on('data', data => {
+serviceClient.on('data', dataEnc => {
+  // try decrypt otherwise - kill
+  let data = crypt.decrypt(dataEnc.toString('utf8'))
+  if (data === null) return
+
   let tmpJson = tryParseJSON(data.toString('utf8'))
   if (tmpJson.pong) return
   if (tmpJson.agentDied || !tmpJson.port) {
@@ -86,9 +94,9 @@ serviceClient.on('connect', () => {
   log.info('Connection to server established, waiting for agent.')
   let msg = { type: 'client', name: clientName }
   if (dataJson && dataJson.uuid) msg.uuid = dataJson.uuid
-  serviceClient.write(JSON.stringify(msg))
+  serviceClient.write(crypt.encrypt(JSON.stringify(msg)))
   pinger = setInterval(() => {
-    serviceClient.write('0')
+    serviceClient.write(crypt.encrypt('' + Math.random()))
   }, 15000)
   if (dataJson) isDataClient = true
 })
