@@ -185,7 +185,7 @@ function createServer (connectionName, serviceAgentUuid) {
   const dataServerPort = connections[connectionName][AGENT][serviceAgentUuid].port
 
   pipes[connectionName].server = net.createServer(socket => {
-    function onData (dataEnc) {
+    socket.once('data', dataEnc => {
       // try decrypt otherwise - kill
       let data = crypt.decrypt(dataEnc.toString('utf8'))
       if (data === null) return socket.destroy()
@@ -231,15 +231,12 @@ function createServer (connectionName, serviceAgentUuid) {
           log.debug('SENDING NOTIFICATION TO AGENT')
           connections[connectionName][AGENT][serviceAgentUuid].socket.write(crypt.encrypt('{"data":true}'))
         }
-
-      socket.removeListener('data', onData)
-    }
-
-    socket.on('data', onData)
+    })
 
     socket.on('error', err => log.err('AGENT_SERVER_SOCKET', err.name || err.code, err.message))
 
     socket.on('close', error => {
+      socket.removeAllListeners('data')
       // unknown or not piped connection closed
       if (!socket.uuid || !conPipes[socket.uuid]) return
 
