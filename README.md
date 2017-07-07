@@ -4,7 +4,7 @@ nodejs implemention for port forwardning.
 
 Allows you to open to forward any custom port (rdp, ssh, proxies, whatever) from machine in some private network (with no public ip) to another machine anywhere else through some server with public ip.
 
-![](port-forwarding.png?raw=true)
+![](imgs/client-server-agent.png?raw=true)
 
 0. have latest nodejs (8+) and npm
 1. clone repo
@@ -89,6 +89,10 @@ N_T_CRYPT_KEY should be the same for server, all agents and clients.
 
 TODO.
 Currently having problems with buffer length. Once message is encrypted its length increases and single socket message splits to two (or more?) messages. Can't find out the way to join them back properly :(
+
+### one more img example :)
+
+![](imgs/port-forwarding.png?raw=true)
 
 ### proxy
 
