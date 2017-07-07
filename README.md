@@ -29,7 +29,7 @@ NOTE: ports specified should be accessible from internet
 install agent on machine you want to connect to
 create your own configuration in `.env` file, example:
 ```
-N_T_SERVER_HOST=your-server-hostname-or-ip
+N_T_SERVER_HOST=server-with-public-ip
 N_T_SERVER_PORT=32121
 
 N_T_AGENT_NAME=test-rdp
@@ -52,7 +52,7 @@ It is better to use long client/agent names for security reasons!
 install client on your local machine
 create your own configuration in `.env` file, example:
 ```
-N_T_SERVER_HOST=your-server-hostname-or-ip
+N_T_SERVER_HOST=server-with-public-ip
 N_T_SERVER_PORT=32121
 
 N_T_CLIENT_NAME=test-rdp
@@ -60,7 +60,7 @@ N_T_CLIENT_PORT=1111
 ```
 or
 ```
-N_T_SERVER_HOST=your-server-hostname-or-ip
+N_T_SERVER_HOST=server-with-public-ip
 N_T_SERVER_PORT=32121
 
 N_T_CLIENT_NAME=test-ssh
