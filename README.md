@@ -38,7 +38,7 @@ N_T_AGENT_DATA_PORT=3389
 ```
 or
 ```
-N_T_SERVER_HOST=your-server-hostname-or-ip
+N_T_SERVER_HOST=server-with-public-ip
 N_T_SERVER_PORT=32121
 
 N_T_AGENT_NAME=test-ssh
