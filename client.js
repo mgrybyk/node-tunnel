@@ -1,10 +1,11 @@
 'use strict'
 
 const net = require('net')
-const { tryParseJSON, log, removeElement, crypt } = require('./utils')
+const { tryParseJSON, log, removeElement, crypt, bufShift } = require('./utils')
 const uuid = require('uuid/v4')
 
 const clientName = process.env.N_T_CLIENT_NAME || 'dbg'
+let shiftConstant = clientName.length
 if (clientName.length > 128) {
   log.info('Name should not be more than 128 symbols length.')
   process.exit(1)
@@ -25,6 +26,7 @@ let dataJson
 // local
 let localServer = net.createServer({ pauseOnConnect: true }, localSocket => {
   let isDataClientConnected = false
+  let throughInc, throughDec
 
   if (!isDataClient || !dataJson) {
     return localSocket.destroy()
@@ -38,8 +40,13 @@ let localServer = net.createServer({ pauseOnConnect: true }, localSocket => {
     dataClient.write(crypt.encrypt(`{ "type": "client", "uuid": "${dataClient.uuid}" }`))
   })
   dataClient.once('data', data => {
-    dataClient.pipe(localSocket)
-    localSocket.pipe(dataClient)
+    throughInc = bufShift(shiftConstant)
+    throughDec = bufShift(-shiftConstant)
+    dataClient
+      .pipe(throughDec)
+      .pipe(localSocket)
+      .pipe(throughInc)
+      .pipe(dataClient)
     isDataClientConnected = true
     localSocket.resume()
   })
@@ -57,8 +64,11 @@ let localServer = net.createServer({ pauseOnConnect: true }, localSocket => {
   localSocket.on('close', hadError => {
     removeElement(localConnections, localSocket)
     if (isDataClientConnected) {
-      dataClient.unpipe(localSocket)
-      localSocket.unpipe(dataClient)
+      dataClient
+        .unpipe(throughDec)
+        .unpipe(localSocket)
+        .unpipe(throughInc)
+        .unpipe(dataClient)
       if (!dataClient.destroyed) dataClient.destroy()
     }
   })

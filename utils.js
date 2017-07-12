@@ -5,6 +5,7 @@ if (process.argv[2]) {
   dotEnvConfig.path = process.argv[2]
 }
 require('dotenv').config(dotEnvConfig)
+const through2 = require('through2')
 
 const logDebug = process.env.N_T_LOG_DEBUG === 'true'
 const logError = process.env.N_T_LOG_ERROR === 'true'
@@ -56,9 +57,9 @@ module.exports.verifyDataJson = dataJson => {
 const crypto = require('crypto')
 const cryptKey = process.env.N_T_CRYPT_KEY || 'sASLNFpn7&3HLKASJFH#asD^*T3r32fASKJ#%@#'
 if (!process.env.N_T_CRYPT_KEY) console.log('WARNING: default CRYPT KEY is used!!!')
-const cryptAlg = 'aes128'
+const cryptAlg = 'aes-256-cbc'
 
-module.exports.crypt = {
+let crypt = {
   cipher: () => {
     let cipher = crypto.createCipher(cryptAlg, cryptKey)
     cipher.on('error', err => log.err('ENC', err.message))
@@ -72,7 +73,7 @@ module.exports.crypt = {
   encrypt (str) {
     let cipher = this.cipher()
     try {
-      return (cipher.update(str, 'utf8', 'hex') + cipher.final('hex'))
+      return (cipher.update(str, 'utf8', 'base64') + cipher.final('base64'))
     } catch (e) {
       return null
     }
@@ -80,11 +81,57 @@ module.exports.crypt = {
   decrypt (str) {
     let decipher = this.decipher()
     try {
-      return (decipher.update(str, 'hex', 'utf8') + decipher.final('utf8'))
+      return (decipher.update(str, 'base64', 'utf8') + decipher.final('utf8'))
     } catch (e) {
       return null
     }
+  },
+  encryptBuf (buffer) {
+    let cipher = this.cipher()
+    try {
+      return Buffer.concat([cipher.update(buffer), cipher.final()])
+    } catch (e) {
+      // console.log('buf enc', buffer.toString())
+      return buffer
+    }
+  },
+  decryptBuf (buffer) {
+    let decipher = this.decipher()
+    try {
+      return Buffer.concat([decipher.update(buffer), decipher.final()])
+    } catch (e) {
+      // console.log('buf dec failed!', buffer.toString(), this.decrypt(buffer.toString()))
+      return buffer
+    }
+  }
+}
+module.exports.crypt = crypt
+
+module.exports.log = log
+
+function transform (shiftValue) {
+  return function (chunk, enc, callback) {
+    // Encryption won't work this way because
+    // data after encrpytion or decryption is corrupted
+    if (shiftValue > 0) {
+      bufShift(chunk, shiftValue)
+      // chunk = crypt.encryptBuf(chunk)
+    } else {
+      // chunk = crypt.decryptBuf(chunk)
+      bufShift(chunk, shiftValue)
+    }
+
+    this.push(chunk)
+    return callback()
   }
 }
 
-module.exports.log = log
+function bufShift (chunk, shiftValue) {
+  for (let i = 0; i < chunk.length; i++) {
+    chunk[i] = chunk[i] + shiftValue
+  }
+}
+
+module.exports.bufShift = (shiftConstant) => {
+  return through2(transform(shiftConstant))
+}
