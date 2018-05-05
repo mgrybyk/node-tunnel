@@ -94,17 +94,6 @@ Currently having problems with buffer length. Once message is encrypted its leng
 
 ![](imgs/port-forwarding.png?raw=true)
 
-### proxy
-
-To test application and for personal purposes I'm using proxy/proxy which is SOCKS proxy server.
-I don't recommend to use it as far as it is not secure and probably has some other defects, but it works.
-If you still want to use it with this application - run `proxy/proxy` on host with agent, `.env` example:
-```
-N_T_PROXY_HOST=localhost
-N_T_PROXY_PORT=8888
-```
-dont forget to point agent to proxy port: `N_T_AGENT_DATA_PORT=8888`
-
 ---
 
 **NOTE**: 
