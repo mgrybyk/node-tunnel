@@ -18,7 +18,6 @@ const serverPort = parseInt(process.env.N_T_SERVER_PORT) || 1337
 const pipeHost = process.env.N_T_AGENT_DATA_HOST || 'localhost'
 const pipePort = parseInt(process.env.N_T_AGENT_DATA_PORT) || 8888
 let fatalError = false
-let sameNameRetries = 3
 let serviceUuid
 let dataPort
 
@@ -40,13 +39,9 @@ serviceAgent.on('data', dataEnc => {
     let dataJson = tryParseJSON(value + '}')
     if (dataJson.error) {
       log.info(dataJson.error)
-      if (sameNameRetries > 0 && dataJson.error === 'agent with this name already exist') {
-        log.info('attempting to reconnect, retries left:', sameNameRetries)
-        sameNameRetries--
-      } else fatalError = true
+      fatalError = true
       return serviceAgent.destroy()
     }
-    sameNameRetries = 3
     if (dataJson.pong) { return }
     if (dataJson.uuid && dataJson.port) {
       serviceUuid = dataJson.uuid
@@ -135,7 +130,7 @@ serviceAgent.on('close', hadError => {
   dataPort = undefined
   serviceAgent.destroy()
   if (!fatalError) {
-    connectWithDelay(50000)
+    connectWithDelay(5000)
   }
 })
 

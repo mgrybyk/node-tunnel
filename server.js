@@ -151,19 +151,17 @@ let serviceServer = net.createServer(serviceSocket => {
 
         // delete agent from connections
         serverDead = true
-        setTimeout(() => {
-          delete pipes[cProps.name]
-          delete connections[cProps.name][AGENT]
-        }, 5000)
+        delete connections[cProps.name][AGENT]
+        delete pipes[cProps.name]
       })
       // sometimes server not stopping
       // but we need to live at least somehow
       setTimeout(() => {
         if (!serverDead) {
-          delete pipes[cProps.name]
           delete connections[cProps.name][AGENT]
+          delete pipes[cProps.name]
         }
-      }, 40000)
+      }, 30000)
     } else if (cProps.type === CLIENT) {
       log.info(`${cProps.type} "${cProps.name}" went offilne.`)
       delete connections[cProps.name][CLIENT][cProps.uuid]
