@@ -1,12 +1,12 @@
 {
   "name": "node-tunnel",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "",
   "main": "",
   "dependencies": {
-    "dotenv": "^4.0.0",
-    "through2": "^2.0.3",
-    "uuid": "^3.2.1"
+    "dotenv": "^8.2.0",
+    "through2": "^3.0.1",
+    "uuid": "^3.3.3"
   },
   "devDependencies": {},
   "scripts": {},
