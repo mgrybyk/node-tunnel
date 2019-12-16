@@ -1,16 +1,16 @@
 ## node-tunnel
 
-nodejs implemention for port forwardning.
+> NodeJS port forwarding implementation
 
 Allows you to open to forward any custom port (rdp, ssh, proxies, whatever) from machine in some private network (with no public ip) to another machine anywhere else through some server with public ip.
 
 ![](https://github.com/mgrybyk/node-tunnel/blob/images-only/imgs/client-server-agent.png?raw=true)
 
-0. have latest nodejs (8+) and npm
-1. clone repo
-2. npm i
+1. have latest nodejs (8+) and npm
+2. clone repo
+3. npm i
 
-**WARN: data is NOT encrpyted at the moment, except service messages!**
+**WARN: data is NOT encrypted at the moment, except service messages!**
 
 
 ### server
@@ -118,8 +118,8 @@ If you still want/need it - feel free.*
 
 **Q**: I have multiple messages on client/agent side "Connection to server established."
 
-**A**: You have to set same *N_T_CRYPT_KEY* for server and all agents/clients.
+**A**: You have to set same *N_T_CRYPT_KEY* (IV/ALG) for server and all agents/clients.
 
 **Q**: Next plans?
 
-**A**: fix defects, cleanup code, increase secuirty, your suggestions :).
+**A**: none at this point...
