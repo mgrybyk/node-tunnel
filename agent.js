@@ -14,7 +14,7 @@ const serverHost = process.env.N_T_SERVER_HOST || 'localhost'
 const serverPort = parseInt(process.env.N_T_SERVER_PORT) || 1337
 
 // NOTE: I can actually pass these values from client,
-// but it is EXTREAMLY not secure
+// but it is EXTREMELY not secure
 const pipeHost = process.env.N_T_AGENT_DATA_HOST || 'localhost'
 const pipePort = parseInt(process.env.N_T_AGENT_DATA_PORT) || 8888
 let fatalError = false
@@ -152,7 +152,7 @@ function connectWithDelay (delay) {
 connectWithDelay(500)
 
 process.on('exit', (code) => {
-  log.info(`Stopping agent, trying to close connetions - Local: ${localConnections.length}, Data: ${dataConnections.length}`)
+  log.info(`Stopping agent, trying to close connections - Local: ${localConnections.length}, Data: ${dataConnections.length}`)
   localConnections.forEach(localConnection => {
     if (localConnection && !localConnection.destroyed) {
       localConnection.unpipe()

@@ -67,7 +67,7 @@ let serviceServer = net.createServer(serviceSocket => {
       type: dataJson.type
     }
 
-    // procceding to build connections for agent/client
+    // proceeding to build connections for agent/client
     if (!connections[dataJson.name][dataJson.type][dataJson.uuid]) {
       connections[dataJson.name][dataJson.type][dataJson.uuid] = {}
     }
@@ -94,7 +94,7 @@ let serviceServer = net.createServer(serviceSocket => {
 
         // get first available port for agent
         agentObj.port = ports.shift()
-        if (!agentObj.port) { return serviceSocket.destroy() } // todo notify agent that there are no free portss
+        if (!agentObj.port) { return serviceSocket.destroy() } // todo notify agent that there are no free ports
 
         // create dedicated server for agent
         createServer(dataJson.name, dataJson.uuid)
@@ -103,7 +103,7 @@ let serviceServer = net.createServer(serviceSocket => {
         notify(serviceSocket, agentObj.port, dataJson.uuid)
 
         // notify all connected client that agent is now online
-        // all client that will come later will be notified separetely (see above)
+        // all client that will come later will be notified separately (see above)
         if (!connections[dataJson.name][CLIENT]) return
         Object.keys(connections[dataJson.name][CLIENT]).forEach(clientUuid => {
           notify(connections[dataJson.name][CLIENT][clientUuid].socket, agentObj.port, clientUuid)
@@ -117,7 +117,7 @@ let serviceServer = net.createServer(serviceSocket => {
   serviceSocket.on('close', hadError => {
     serviceSocket.removeAllListeners('data')
     let cProps = serviceSocket.cProps
-    if (!cProps) return log.debug('unkown connection closed')
+    if (!cProps) return log.debug('unknown connection closed')
 
     if (cProps.type === AGENT) {
       // notify clients that agent went offline
@@ -147,7 +147,7 @@ let serviceServer = net.createServer(serviceSocket => {
         // add port that is no longer in use
         ports.push(portToRelease)
 
-        log.info(cProps.type, cProps.name, 'went offilne and release port', portToRelease)
+        log.info(cProps.type, cProps.name, 'went offline and release port', portToRelease)
 
         // delete agent from connections
         serverDead = true
@@ -165,7 +165,7 @@ let serviceServer = net.createServer(serviceSocket => {
         }
       }, 40000)
     } else if (cProps.type === CLIENT) {
-      log.info(`${cProps.type} "${cProps.name}" went offilne.`)
+      log.info(`${cProps.type} "${cProps.name}" went offline.`)
       delete connections[cProps.name][CLIENT][cProps.uuid]
     }
   })

@@ -137,7 +137,7 @@ function connectWithDelay (delay) {
 connectWithDelay(500)
 
 process.on('exit', (code) => {
-  log.info(`Stopping client, trying to close connetions - Local: ${localConnections.length}, Data: ${dataConnections.length}`)
+  log.info(`Stopping client, trying to close connections - Local: ${localConnections.length}, Data: ${dataConnections.length}`)
   localConnections.forEach(localConnection => {
     if (localConnection && !localConnection.destroyed) {
       localConnection.unpipe()

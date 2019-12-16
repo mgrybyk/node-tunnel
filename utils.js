@@ -54,19 +54,23 @@ module.exports.verifyDataJson = dataJson => {
   return true
 }
 
+if (!process.env.N_T_CRYPT_KEY) {
+  console.log('WARNING: default CRYPT KEY is used!!!')
+}
+
 const crypto = require('crypto')
-const cryptKey = process.env.N_T_CRYPT_KEY || 'sASLNFpn7&3HLKASJFH#asD^*T3r32fASKJ#%@#'
-if (!process.env.N_T_CRYPT_KEY) console.log('WARNING: default CRYPT KEY is used!!!')
-const cryptAlg = 'aes-256-cbc'
+const cryptKey = process.env.N_T_CRYPT_KEY || 'b70231120900c150f16291fd'
+const cryptIv = process.env.N_T_CRYPT_IV || 'e7c3df588cc0cd5e'
+const cryptAlg = process.env.N_T_CRYPT_ALG || 'aes-192-cbc'
 
 let crypt = {
   cipher: () => {
-    let cipher = crypto.createCipher(cryptAlg, cryptKey)
+    let cipher = crypto.createCipheriv(cryptAlg, cryptKey, cryptIv)
     cipher.on('error', err => log.err('ENC', err.message))
     return cipher
   },
-  decipher: () => {
-    let decipher = crypto.createDecipher(cryptAlg, cryptKey)
+  decipher: () => { 
+    let decipher = crypto.createDecipheriv(cryptAlg, cryptKey, cryptIv)
     decipher.on('error', err => log.err('DEC', err.message))
     return decipher
   },
@@ -112,7 +116,7 @@ module.exports.log = log
 function transform (shiftValue) {
   return function (chunk, enc, callback) {
     // Encryption won't work this way because
-    // data after encrpytion or decryption is corrupted
+    // data after encryption or decryption is corrupted
     if (shiftValue > 0) {
       bufShift(chunk, shiftValue)
       // chunk = crypt.encryptBuf(chunk)
