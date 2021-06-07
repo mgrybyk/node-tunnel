@@ -1,11 +1,11 @@
 'use strict'
 
 const net = require('net')
-const { tryParseJSON, log, removeElement, crypt, bufShift } = require('./utils')
+const { tryParseJSON, log, removeElement, crypt } = require('./utils')
 const uuid = require('uuid/v4')
 
 const agentName = process.env.N_T_AGENT_NAME || 'dbg'
-let shiftConstant = agentName.length
+
 if (agentName.length > 128) {
   log.info('Name should not be more than 128 symbols length.')
   process.exit(1)
@@ -69,7 +69,6 @@ serviceAgent.on('data', dataEnc => {
     dataAgent.on('error', err => log.err('DATA_AGENT', err.name || err.code, err.message))
     dataAgent.on('connect', () => {
       log.debug('data agent connected!')
-      let throughInc, throughDec
       let localSocket = new net.Socket()
       localConnections.push(localSocket)
       let isPiped = false
@@ -81,12 +80,8 @@ serviceAgent.on('data', dataEnc => {
           localSocket.destroy()
         } else {
           dataAgent.write(crypt.encrypt(`{ "type": "agent", "uuid": "${dataAgent.uuid}" }`))
-          throughInc = bufShift(shiftConstant)
-          throughDec = bufShift(-shiftConstant)
           dataAgent
-            .pipe(throughDec)
             .pipe(localSocket)
-            .pipe(throughInc)
             .pipe(dataAgent)
           isPiped = true
         }
@@ -99,9 +94,7 @@ serviceAgent.on('data', dataEnc => {
         log.debug('Connection to local port closed')
         if (isPiped) {
           dataAgent
-            .unpipe(throughDec)
             .unpipe(localSocket)
-            .unpipe(throughInc)
             .unpipe(dataAgent)
           isPiped = false
         }

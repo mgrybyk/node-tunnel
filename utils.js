@@ -2,10 +2,9 @@
 
 let dotEnvConfig = {}
 if (process.argv[2]) {
-  dotEnvConfig.path = process.argv[2]
+  dotEnvConfig.path = process.argv[2] || '.env'
 }
 require('dotenv').config(dotEnvConfig)
-const through2 = require('through2')
 
 const logDebug = process.env.N_T_LOG_DEBUG === 'true'
 const logError = process.env.N_T_LOG_ERROR === 'true'
@@ -59,18 +58,19 @@ if (!process.env.N_T_CRYPT_KEY) {
 }
 
 const crypto = require('crypto')
-const cryptKey = process.env.N_T_CRYPT_KEY || 'b70231120900c150f16291fd'
-const cryptIv = process.env.N_T_CRYPT_IV || 'e7c3df588cc0cd5e'
-const cryptAlg = process.env.N_T_CRYPT_ALG || 'aes-192-cbc'
+const cryptKey = (process.env.N_T_CRYPT_KEY || 'b70231120900saamkb83gsc150f162fd').toString('hex').slice(0, 32)
+const cryptIv = (process.env.N_T_CRYPT_IV || 'e7c3df588cc0').toString('hex').slice(0, 12);
+const cryptAlg = 'chacha20-poly1305'
+const authTagLength = 16
 
 let crypt = {
   cipher: () => {
-    let cipher = crypto.createCipheriv(cryptAlg, cryptKey, cryptIv)
+    let cipher = crypto.createCipheriv(cryptAlg, cryptKey, cryptIv, { authTagLength })
     cipher.on('error', err => log.err('ENC', err.message))
     return cipher
   },
   decipher: () => { 
-    let decipher = crypto.createDecipheriv(cryptAlg, cryptKey, cryptIv)
+    let decipher = crypto.createDecipheriv(cryptAlg, cryptKey, cryptIv, { authTagLength })
     decipher.on('error', err => log.err('DEC', err.message))
     return decipher
   },
@@ -89,53 +89,8 @@ let crypt = {
     } catch (e) {
       return null
     }
-  },
-  encryptBuf (buffer) {
-    let cipher = this.cipher()
-    try {
-      return Buffer.concat([cipher.update(buffer), cipher.final()])
-    } catch (e) {
-      // console.log('buf enc', buffer.toString())
-      return buffer
-    }
-  },
-  decryptBuf (buffer) {
-    let decipher = this.decipher()
-    try {
-      return Buffer.concat([decipher.update(buffer), decipher.final()])
-    } catch (e) {
-      // console.log('buf dec failed!', buffer.toString(), this.decrypt(buffer.toString()))
-      return buffer
-    }
   }
 }
 module.exports.crypt = crypt
 
 module.exports.log = log
-
-function transform (shiftValue) {
-  return function (chunk, enc, callback) {
-    // Encryption won't work this way because
-    // data after encryption or decryption is corrupted
-    if (shiftValue > 0) {
-      bufShift(chunk, shiftValue)
-      // chunk = crypt.encryptBuf(chunk)
-    } else {
-      // chunk = crypt.decryptBuf(chunk)
-      bufShift(chunk, shiftValue)
-    }
-
-    this.push(chunk)
-    return callback()
-  }
-}
-
-function bufShift (chunk, shiftValue) {
-  for (let i = 0; i < chunk.length; i++) {
-    chunk[i] = chunk[i] + shiftValue
-  }
-}
-
-module.exports.bufShift = (shiftConstant) => {
-  return through2(transform(shiftConstant))
-}

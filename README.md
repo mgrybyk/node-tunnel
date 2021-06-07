@@ -66,7 +66,6 @@ N_T_SERVER_PORT=32121
 N_T_CLIENT_NAME=test-ssh
 N_T_CLIENT_PORT=1112
 ```
-*It is better to use long client/agent names for security reasons!*
 
 
 Finally, to open rdp/ssh connection to machine where agent is installed, connect to localhost:1111 / localhost:1112 with your rdp/ssh client correspondingly
@@ -78,17 +77,14 @@ If you still want/need it - feel free.*
 
 ### set service messages crypt key (not data!)
 
-All service messages are encrypted with default key using **aes128**. To change override default key edit `.env.` file:
 ```
-N_T_CRYPT_KEY=YOUR_ENCRYPTION_KEY
+# 12 symbols
+N_T_CRYPT_IV=vma4o5q8t439
+# 32 symbols
+N_T_CRYPT_KEY=:AKJSF-238fh;LASJFBH:3rf0=;hn:EW
 ```
-N_T_CRYPT_KEY should be the same for server, all agents and clients.
+N_T_CRYPT_KEY / N_T_CRYPT_IV should be the same for server, all agents and clients.
 
-
-### data encryption  (not implemented yet)
-
-TODO.
-Currently having problems with buffer length. Once message is encrypted its length increases and single socket message splits to two (or more?) messages. Can't find out the way to join them back properly :(
 
 ### one more img example :)
 
@@ -112,14 +108,6 @@ If you still want/need it - feel free.*
 
 **A**: Multiple issues possible, like: firewalls, your host is connected to router and no virtual server is configured for server ports, etc.
 
-**Q**: I have no server with public IP, what should I do?
-
-**A**: You can create any instance where it is possible to run Node.js and open at least two ports, example: https://aws.amazon.com/free/
-
 **Q**: I have multiple messages on client/agent side "Connection to server established."
 
 **A**: You have to set same *N_T_CRYPT_KEY* (IV/ALG) for server and all agents/clients.
-
-**Q**: Next plans?
-
-**A**: none at this point...

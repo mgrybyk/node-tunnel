@@ -4,9 +4,8 @@
   "description": "",
   "main": "",
   "dependencies": {
-    "dotenv": "^8.2.0",
-    "through2": "^3.0.1",
-    "uuid": "^3.3.3"
+    "dotenv": "^8.6.0",
+    "uuid": "^3.4.0"
   },
   "devDependencies": {},
   "scripts": {},
