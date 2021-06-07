@@ -2,7 +2,7 @@
 
 const net = require('net')
 const { tryParseJSON, log, removeElement, crypt } = require('./utils')
-const uuid = require('uuid/v4')
+const { v4: uuid } = require('uuid')
 
 const agentName = process.env.N_T_AGENT_NAME || 'dbg'
 

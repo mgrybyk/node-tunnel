@@ -1,7 +1,7 @@
 'use strict'
 
 const net = require('net')
-const uuid = require('uuid/v4')
+const { v4: uuid } = require('uuid')
 const { tryParseJSON, log, types, verifyDataJson, crypt } = require('./utils')
 const { CLIENT, AGENT } = types
 
