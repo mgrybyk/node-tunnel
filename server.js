@@ -304,8 +304,8 @@ function createServer(config = getServerConfig()) {
 
       if (!force) await waitForSockets(dataSockets, config.shutdownTimeout)
 
-      destroySockets(dataSockets)
-      for (const socket of serviceSockets) socket.destroy()
+      await destroySockets(dataSockets)
+      await destroySockets(serviceSockets)
       if (serviceServer?.closeAllConnections) serviceServer.closeAllConnections()
       for (const pipeObj of Object.values(pipes)) {
         if (pipeObj.server?.closeAllConnections) pipeObj.server.closeAllConnections()

@@ -21,10 +21,17 @@ function stopListening(server) {
 }
 
 function destroySockets(sockets) {
-  for (const socket of sockets) {
+  const closePromises = []
+
+  for (const socket of [...sockets]) {
+    if (!socket.closed) {
+      closePromises.push(new Promise(resolve => socket.once('close', resolve)))
+    }
     socket.unpipe()
-    socket.destroy()
+    if (!socket.destroyed) socket.destroy()
   }
+
+  return Promise.all(closePromises)
 }
 
 function waitForSockets(sockets, timeout) {

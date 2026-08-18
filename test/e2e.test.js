@@ -4,11 +4,18 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const crypto = require('node:crypto')
 const net = require('node:net')
-const path = require('node:path')
-const { spawn } = require('node:child_process')
+const {
+  host,
+  startChild,
+  waitForOutput,
+  waitForListening,
+  stopChild,
+  formatChildLogs,
+  reserveTopologyPorts,
+  listen,
+  closeServer
+} = require('../test-support/helpers')
 
-const projectRoot = path.resolve(__dirname, '..')
-const host = '127.0.0.1'
 const cryptKey = '0123456789abcdef0123456789abcdef'
 const startupTimeout = 15_000
 const streamTimeout = 30_000
@@ -46,7 +53,7 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
 
     const server = startChild('server', 'server.js', commonEnv)
     children.push(server)
-    await waitForOutput(server, `Server listening on port ${ports.service}`)
+    await waitForListening(server, ports.service, startupTimeout)
 
     for (let agentIndex = 0; agentIndex < agentsCount; agentIndex++) {
       const name = agentName(agentIndex)
@@ -58,7 +65,7 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
       })
 
       children.push(agent)
-      await waitForOutput(server, `Agent "${name}" connected, dedicated port`)
+      await waitForOutput(server, `Agent "${name}" connected, dedicated port`, startupTimeout)
     }
 
     const clients = []
@@ -80,7 +87,7 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
       }
     }
 
-    await Promise.all(clients.map(client => waitForOutput(client, 'Agent found, ready!')))
+    await Promise.all(clients.map(client => waitForOutput(client, 'Agent found, ready!', startupTimeout)))
 
     for (let waveIndex = 0; waveIndex < waveSizes.length; waveIndex++) {
       const streams = []
@@ -169,89 +176,6 @@ function writeAndThrottle(socket, data) {
 
   socket.pause()
   socket.once('drain', () => socket.resume())
-}
-
-function startChild(label, script, env) {
-  const child = spawn(process.execPath, [path.join(projectRoot, script)], {
-    cwd: projectRoot,
-    env: { ...process.env, ...env },
-    stdio: ['ignore', 'pipe', 'pipe']
-  })
-  const info = { label, child, stdout: '', stderr: '' }
-
-  child.stdout.on('data', data => {
-    info.stdout += data.toString()
-  })
-  child.stderr.on('data', data => {
-    info.stderr += data.toString()
-  })
-
-  return info
-}
-
-function waitForOutput(info, expected, timeout = startupTimeout) {
-  const allOutput = () => info.stdout + info.stderr
-
-  if (allOutput().includes(expected)) return Promise.resolve()
-
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error(`${info.label} did not output "${expected}" within ${timeout}ms`))
-    }, timeout)
-
-    const onData = () => {
-      if (!allOutput().includes(expected)) return
-      cleanup()
-      resolve()
-    }
-    const onExit = (code, signal) => {
-      cleanup()
-      reject(new Error(`${info.label} exited before startup completed (code=${code}, signal=${signal})`))
-    }
-    const onError = error => {
-      cleanup()
-      reject(error)
-    }
-    const cleanup = () => {
-      clearTimeout(timer)
-      info.child.stdout.off('data', onData)
-      info.child.stderr.off('data', onData)
-      info.child.off('exit', onExit)
-      info.child.off('error', onError)
-    }
-
-    info.child.stdout.on('data', onData)
-    info.child.stderr.on('data', onData)
-    info.child.once('exit', onExit)
-    info.child.once('error', onError)
-  })
-}
-
-async function stopChild(info) {
-  const child = info.child
-  if (child.exitCode !== null || child.signalCode !== null) return
-
-  await new Promise(resolve => {
-    const forceTimer = setTimeout(() => child.kill('SIGKILL'), 1_000)
-    child.once('exit', () => {
-      clearTimeout(forceTimer)
-      resolve()
-    })
-    child.kill('SIGTERM')
-  })
-}
-
-function formatChildLogs(children) {
-  if (children.length === 0) return 'No child processes were started.'
-
-  return children
-    .map(info => {
-      const output = `${info.stdout}${info.stderr}`.trim()
-      const tail = output.slice(-8_000)
-      return `--- ${info.label} ---\n${tail || '(no output)'}`
-    })
-    .join('\n')
 }
 
 function runTunnelStream({ localPort, payload, expectedBanner, transformMask, label, writePattern }) {
@@ -387,79 +311,4 @@ function xor(data, mask) {
     transformed[index] = data[index] ^ mask
   }
   return transformed
-}
-
-async function reserveTopologyPorts(dataPortsCount, clientsCount) {
-  const dataReservation = await reservePortRange(dataPortsCount)
-  const otherReservations = []
-
-  try {
-    for (let index = 0; index < 1 + clientsCount; index++) {
-      otherReservations.push(await reservePort())
-    }
-
-    return {
-      service: otherReservations[0].port,
-      dataFrom: dataReservation.base,
-      dataTo: dataReservation.base + dataPortsCount - 1,
-      clients: otherReservations.slice(1).map(reservation => reservation.port)
-    }
-  } finally {
-    await Promise.all([
-      ...dataReservation.servers.map(closeServer),
-      ...otherReservations.map(reservation => closeServer(reservation.server))
-    ])
-  }
-}
-
-async function reservePortRange(count) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const base = 20_000 + Math.floor(Math.random() * (35_000 - count))
-    const servers = []
-
-    try {
-      for (let offset = 0; offset < count; offset++) {
-        const server = net.createServer()
-        await listen(server, base + offset)
-        servers.push(server)
-      }
-      return { base, servers }
-    } catch (_error) {
-      await Promise.all(servers.map(closeServer))
-    }
-  }
-
-  throw new Error(`could not reserve ${count} consecutive ports`)
-}
-
-async function reservePort() {
-  const server = net.createServer()
-  await listen(server, 0)
-  return { server, port: server.address().port }
-}
-
-function listen(server, port) {
-  return new Promise((resolve, reject) => {
-    const onListening = () => {
-      cleanup()
-      resolve()
-    }
-    const onError = error => {
-      cleanup()
-      reject(error)
-    }
-    const cleanup = () => {
-      server.off('listening', onListening)
-      server.off('error', onError)
-    }
-
-    server.once('listening', onListening)
-    server.once('error', onError)
-    server.listen(port, host)
-  })
-}
-
-function closeServer(server) {
-  if (!server.listening) return Promise.resolve()
-  return new Promise(resolve => server.close(resolve))
 }

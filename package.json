@@ -35,13 +35,12 @@
     "start:server": "node server.js",
     "start:agent": "node agent.js",
     "start:client": "node client.js",
-    "check": "npm run check:syntax && npm run lint && npm run format:check",
-    "check:syntax": "node --check config.js && node --check lifecycle.js && node --check protocol.js && node --check utils.js && node --check server.js && node --check agent.js && node --check client.js && node --check test/crypto.test.js && node --check test/protocol.test.js && node --check test/lifecycle.test.js && node --check test/e2e.test.js && node --check test/reliability.test.js && node --check test-support/helpers.js && node --check scripts/local-remote.js",
+    "check": "biome check .",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format:check": "biome format .",
-    "test": "node --test",
-    "test:coverage": "c8 node --test"
+    "test": "node --test --test-concurrency=3",
+    "test:coverage": "c8 node --test --test-concurrency=2"
   },
   "repository": {
     "type": "git",

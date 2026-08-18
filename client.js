@@ -233,9 +233,8 @@ function createClient(config = getClientConfig()) {
 
     closePromise = (async () => {
       if (!force) await waitForSockets(dataConnections, config.shutdownTimeout)
-      destroySockets(localConnections)
-      destroySockets(dataConnections)
-      if (serviceClient) serviceClient.destroy()
+      await Promise.all([destroySockets(localConnections), destroySockets(dataConnections)])
+      await destroySockets(serviceClient ? [serviceClient] : [])
       if (localServer?.closeAllConnections) localServer.closeAllConnections()
       await new Promise(resolve => setImmediate(resolve))
       started = false

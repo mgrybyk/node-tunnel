@@ -26,9 +26,6 @@ entry point is a long-running Node.js process.
   helpers.
 - `utils.js`: logging, message validation, and control/handshake encryption.
 - `.env-example`: all supported environment variables and development defaults.
-- `scripts/local-remote.js`: manual smoke harness. It combines a mock agent-side
-  echo service with a periodic connection to the client-side listener; it is not
-  an automated test suite.
 - `test/crypto.test.js`: control-message encryption regression test.
 - `test/e2e.test.js`: multi-process E2E and load test using the real entry
   points, two in-process target services, two agents, and six clients.
@@ -36,8 +33,8 @@ entry point is a long-running Node.js process.
   scenarios.
 - `test/protocol.test.js`: frame fragmentation, coalescing, validation, and
   configuration unit tests.
-- `test/lifecycle.test.js`: factory API, reconnect backoff, graceful active
-  stream draining, and server-state churn tests.
+- `test/lifecycle.test.js`: factory API, reconnect backoff, occupied-listener
+  failures, graceful and forced shutdown, and server/port-state churn tests.
 - `test-support/helpers.js`: bounded child-process and loopback-network test
   helpers, deliberately kept outside `test/` so default test discovery does not
   execute it as a test file.
@@ -91,16 +88,18 @@ npm ci
 node server.js .env
 node agent.js .env
 node client.js .env
-node scripts/local-remote.js .env
 ```
 
-Run the four Node processes in separate terminals. The example assigns the
+Run the three Node processes in separate terminals. The example assigns the
 control port `1337`, agent data-port pool `3005..3009`, client listener `9999`,
-and mock target `8888`.
+and agent target `8888`; ensure a real service is listening on the configured
+agent target before testing a tunnel manually.
 
 The automated suite uses Node's built-in test runner through `npm test`. `c8` is
 a development-only dependency because it collects V8 coverage from spawned
-entry points; Node's test coverage alone does not. Before behavior changes, run:
+entry points; Node's test coverage alone does not. Test files run serially to
+avoid races while handing reserved loopback ports to child processes; the E2E
+traffic inside its test remains parallel. Before behavior changes, run:
 
 ```sh
 npm run check

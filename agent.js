@@ -206,9 +206,8 @@ function createAgent(config = getAgentConfig()) {
 
     closePromise = (async () => {
       if (!force) await waitForSockets(dataConnections, config.shutdownTimeout)
-      destroySockets(localConnections)
-      destroySockets(dataConnections)
-      if (serviceAgent) serviceAgent.destroy()
+      await Promise.all([destroySockets(localConnections), destroySockets(dataConnections)])
+      await destroySockets(serviceAgent ? [serviceAgent] : [])
       await new Promise(resolve => setImmediate(resolve))
       started = false
       log.info(`Agent stopped. Local connections: ${localConnections.size}, data connections: ${dataConnections.size}`)

@@ -32,27 +32,46 @@ function waitForOutput(info, expected, timeout = 10_000) {
 function waitForOutputCount(info, expected, count, timeout = 10_000) {
   const matches = () => (info.stdout + info.stderr).split(expected).length - 1
   if (matches() >= count) return Promise.resolve()
+  if (info.child.exitCode !== null || info.child.signalCode !== null) {
+    return Promise.reject(childExitError(info))
+  }
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
+      if (matches() >= count) {
+        cleanup()
+        resolve()
+        return
+      }
+
       cleanup()
-      reject(new Error(`${info.label} did not output "${expected}" ${count} time(s) within ${timeout}ms`))
+      reject(
+        new Error(
+          `${info.label} did not output "${expected}" ${count} time(s) within ${timeout}ms\n${formatChildLogs([info])}`
+        )
+      )
     }, timeout)
-    const onData = () => {
+    const pollTimer = setInterval(onData, 10)
+
+    function onData() {
       if (matches() < count) return
       cleanup()
       resolve()
     }
-    const onExit = (code, signal) => {
+
+    function onExit(code, signal) {
       cleanup()
-      reject(new Error(`${info.label} exited early (code=${code}, signal=${signal})`))
+      reject(childExitError(info, code, signal))
     }
-    const onError = error => {
+
+    function onError(error) {
       cleanup()
       reject(error)
     }
-    const cleanup = () => {
+
+    function cleanup() {
       clearTimeout(timer)
+      clearInterval(pollTimer)
       info.child.stdout.off('data', onData)
       info.child.stderr.off('data', onData)
       info.child.off('exit', onExit)
@@ -63,6 +82,62 @@ function waitForOutputCount(info, expected, count, timeout = 10_000) {
     info.child.stderr.on('data', onData)
     info.child.once('exit', onExit)
     info.child.once('error', onError)
+  })
+}
+
+function childExitError(info, code = info.child.exitCode, signal = info.child.signalCode) {
+  return new Error(`${info.label} exited early (code=${code}, signal=${signal})\n${formatChildLogs([info])}`)
+}
+
+function waitForListening(info, port, timeout = 10_000) {
+  if (info.child.exitCode !== null || info.child.signalCode !== null) {
+    return Promise.reject(childExitError(info))
+  }
+
+  return new Promise((resolve, reject) => {
+    let socket
+    let retryTimer
+    let settled = false
+    const timeoutTimer = setTimeout(() => {
+      finish(
+        new Error(`${info.label} did not listen on ${host}:${port} within ${timeout}ms\n${formatChildLogs([info])}`)
+      )
+    }, timeout)
+
+    function attempt() {
+      if (settled) return
+      if (info.child.exitCode !== null || info.child.signalCode !== null) {
+        finish(childExitError(info))
+        return
+      }
+
+      socket = net.createConnection({ host, port })
+      socket.once('connect', () => finish())
+      socket.once('error', () => {
+        socket.destroy()
+        retryTimer = setTimeout(attempt, 10)
+      })
+    }
+
+    function onExit(code, signal) {
+      finish(childExitError(info, code, signal))
+    }
+
+    function finish(error) {
+      if (settled) return
+      settled = true
+      clearTimeout(timeoutTimer)
+      clearTimeout(retryTimer)
+      if (socket) socket.destroy()
+      info.child.off('exit', onExit)
+      info.child.off('error', finish)
+      if (error) reject(error)
+      else resolve()
+    }
+
+    info.child.once('exit', onExit)
+    info.child.once('error', finish)
+    attempt()
   })
 }
 
@@ -230,11 +305,29 @@ function waitForSocketClose(socket, timeout = 5_000) {
   })
 }
 
+function waitForCondition(condition, timeout = 5_000, interval = 10) {
+  if (condition()) return Promise.resolve()
+
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now()
+    const timer = setInterval(() => {
+      if (condition()) {
+        clearInterval(timer)
+        resolve()
+      } else if (Date.now() - startedAt >= timeout) {
+        clearInterval(timer)
+        reject(new Error('condition was not met in time'))
+      }
+    }, interval)
+  })
+}
+
 module.exports = {
   host,
   startChild,
   waitForOutput,
   waitForOutputCount,
+  waitForListening,
   waitForExit,
   stopChild,
   formatChildLogs,
@@ -242,5 +335,6 @@ module.exports = {
   reservePort,
   listen,
   closeServer,
-  waitForSocketClose
+  waitForSocketClose,
+  waitForCondition
 }

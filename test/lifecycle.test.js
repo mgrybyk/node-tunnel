@@ -11,8 +11,17 @@ const { createServer } = require('../server')
 const { createAgent } = require('../agent')
 const { createClient } = require('../client')
 const { createBackoff } = require('../lifecycle')
-const { writeMessage } = require('../utils')
-const { host, reserveTopologyPorts, listen, closeServer, waitForSocketClose } = require('../test-support/helpers')
+const { PROTOCOL_VERSION } = require('../protocol')
+const { writeMessage, createMessageDecoder, log } = require('../utils')
+const {
+  host,
+  reserveTopologyPorts,
+  reservePort,
+  listen,
+  closeServer,
+  waitForSocketClose,
+  waitForCondition
+} = require('../test-support/helpers')
 
 test('application modules expose lifecycle factories without starting on import', () => {
   assert.equal(typeof createServer, 'function')
@@ -38,7 +47,41 @@ test('reconnect backoff grows to its cap and can be reset', () => {
   assert.equal(upperBound.next(), 120)
 })
 
+test('server and client reject occupied listener ports without leaking handles', async t => {
+  silenceInfoLogs(t)
+  const serviceBlocker = net.createServer()
+  await listenOnAllInterfaces(serviceBlocker)
+  const dataReservation = await reservePort()
+  const server = createServer({
+    servicePort: serviceBlocker.address().port,
+    portsFrom: dataReservation.port,
+    portsTo: dataReservation.port,
+    handshakeTimeout: 500,
+    controlIdleTimeout: 5_000,
+    shutdownTimeout: 100
+  })
+  const client = createClient(
+    peerConfig(
+      { service: serviceBlocker.address().port },
+      {
+        name: 'occupied-listener',
+        localPort: serviceBlocker.address().port,
+        shutdownTimeout: 100
+      }
+    )
+  )
+
+  t.after(async () => {
+    await Promise.all([server.close({ force: true }), client.close({ force: true })])
+    await Promise.all([closeServer(serviceBlocker), closeServer(dataReservation.server)])
+  })
+
+  await assert.rejects(server.start(), error => error.code === 'EADDRINUSE')
+  await assert.rejects(client.start(), error => error.code === 'EADDRINUSE')
+})
+
 test('graceful close drains an active stream through all three applications', { timeout: 15_000 }, async t => {
+  silenceInfoLogs(t)
   const payload = Buffer.alloc(1024 * 1024)
   for (let index = 0; index < payload.length; index++) payload[index] = index & 0xff
 
@@ -73,7 +116,7 @@ test('graceful close drains an active stream through all three applications', { 
   await server.start()
   await agent.start()
   await client.start()
-  await waitFor(() => client.getState().ready, 5_000)
+  await waitForCondition(() => client.getState().ready, 5_000)
 
   const responsePromise = requestTunnel(ports.clients[0], payload)
   await requestReceived
@@ -88,7 +131,60 @@ test('graceful close drains an active stream through all three applications', { 
   assert.equal(server.getState().dataSockets, 0)
 })
 
+test('shutdown deadline force-closes a stream that does not drain', { timeout: 10_000 }, async t => {
+  silenceInfoLogs(t)
+  let receivedResolve
+  const received = new Promise(resolve => {
+    receivedResolve = resolve
+  })
+  const backend = createHoldingServer(receivedResolve)
+  await listen(backend)
+
+  const ports = await reserveTopologyPorts(1, 1)
+  const server = createServer(serverConfig(ports))
+  const agent = createAgent(
+    peerConfig(ports, {
+      name: 'forced-close',
+      targetHost: host,
+      targetPort: backend.address().port
+    })
+  )
+  const client = createClient(
+    peerConfig(ports, {
+      name: 'forced-close',
+      localPort: ports.clients[0],
+      shutdownTimeout: 150
+    })
+  )
+
+  t.after(async () => {
+    await Promise.all([client.close({ force: true }), agent.close({ force: true }), server.close({ force: true })])
+    await closeServer(backend)
+  })
+
+  await server.start()
+  await agent.start()
+  await client.start()
+  await waitForCondition(() => client.getState().ready)
+
+  const localSocket = net.createConnection({ host, port: ports.clients[0] })
+  localSocket.on('error', () => {})
+  localSocket.on('connect', () => localSocket.write('held-open-stream'))
+  await received
+
+  const startedAt = Date.now()
+  await client.close()
+  const elapsed = Date.now() - startedAt
+  await waitForSocketClose(localSocket)
+
+  assert.ok(elapsed >= 100, `shutdown returned before its deadline (${elapsed}ms)`)
+  assert.ok(elapsed < 2_000, `shutdown exceeded its bounded deadline (${elapsed}ms)`)
+  assert.equal(client.getState().dataConnections, 0)
+  assert.equal(client.getState().localConnections, 0)
+})
+
 test('server removes empty connection-name state after client churn', { timeout: 10_000 }, async t => {
+  silenceInfoLogs(t)
   const ports = await reserveTopologyPorts(1, 0)
   const server = createServer(serverConfig(ports))
   t.after(() => server.close({ force: true }))
@@ -100,9 +196,31 @@ test('server removes empty connection-name state after client churn', { timeout:
     })
   )
 
-  await waitFor(() => server.getState().connectionNames === 0, 3_000)
+  await waitForCondition(() => server.getState().connectionNames === 0, 3_000)
   assert.equal(server.getState().connectionNames, 0)
   assert.equal(server.getState().serviceSockets, 0)
+})
+
+test('server repeatedly releases and reuses an agent data port', { timeout: 15_000 }, async t => {
+  silenceInfoLogs(t)
+  const ports = await reserveTopologyPorts(1, 0)
+  const server = createServer(serverConfig(ports))
+  const fatalErrors = []
+  server.on('fatal', error => fatalErrors.push(error))
+  t.after(() => server.close({ force: true }))
+  await server.start()
+
+  for (let index = 0; index < 30; index++) {
+    const assignedPort = await registerAgentAndDisconnect(ports.service, `port-churn-${index}`)
+    assert.equal(assignedPort, ports.dataFrom)
+    await waitForCondition(() => {
+      const state = server.getState()
+      return state.connectionNames === 0 && state.pipes === 0 && state.availablePorts.length === 1
+    })
+  }
+
+  assert.deepEqual(fatalErrors, [])
+  assert.deepEqual(server.getState().availablePorts, [ports.dataFrom])
 })
 
 function serverConfig(ports) {
@@ -142,6 +260,18 @@ function createDelayedEchoServer(onRequest) {
       const response = Buffer.concat(chunks, length)
       onRequest()
       setTimeout(() => writeSlowly(socket, response), 100)
+    })
+    socket.on('error', () => {})
+  })
+}
+
+function createHoldingServer(onData) {
+  let received = false
+  return net.createServer({ allowHalfOpen: true }, socket => {
+    socket.on('data', () => {
+      if (received) return
+      received = true
+      onData()
     })
     socket.on('error', () => {})
   })
@@ -189,17 +319,55 @@ function registerAndDisconnect(port, name) {
   })
 }
 
-function waitFor(condition, timeout) {
-  const startedAt = Date.now()
+function registerAgentAndDisconnect(port, name) {
   return new Promise((resolve, reject) => {
-    const timer = setInterval(() => {
-      if (condition()) {
-        clearInterval(timer)
-        resolve()
-      } else if (Date.now() - startedAt >= timeout) {
-        clearInterval(timer)
-        reject(new Error('condition was not met in time'))
-      }
-    }, 10)
+    let assignedPort
+    let settled = false
+    const socket = net.createConnection({ host, port })
+    const timer = setTimeout(() => finish(new Error('agent registration timed out')), 3_000)
+    const decode = createMessageDecoder(
+      message => {
+        try {
+          const response = JSON.parse(message)
+          if (!response.port) return
+          assignedPort = response.port
+          socket.end()
+        } catch (error) {
+          finish(error)
+        }
+      },
+      () => finish(new Error('agent registration returned an invalid frame'))
+    )
+
+    socket.on('connect', () => {
+      writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'agent', name }))
+    })
+    socket.on('data', decode)
+    socket.on('error', finish)
+    socket.on('close', () => {
+      if (!assignedPort) return finish(new Error('agent disconnected before receiving a data port'))
+      finish(null, assignedPort)
+    })
+
+    function finish(error, result) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      socket.destroy()
+      if (error) reject(error)
+      else resolve(result)
+    }
   })
+}
+
+function listenOnAllInterfaces(server) {
+  return new Promise((resolve, reject) => {
+    server.once('listening', resolve)
+    server.once('error', reject)
+    server.listen(0)
+  })
+}
+
+function silenceInfoLogs(t) {
+  t.mock.method(log, 'info', () => {})
 }

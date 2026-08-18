@@ -14,6 +14,7 @@ const {
   startChild,
   waitForOutput,
   waitForOutputCount,
+  waitForListening,
   waitForExit,
   stopChild,
   formatChildLogs,
@@ -46,7 +47,7 @@ test('client becomes usable when its agent connects later', { timeout: 20_000 },
     })
     children.push(server, client)
 
-    await waitForOutput(server, 'Server listening on port')
+    await waitForListening(server, ports.service)
     await waitForOutput(client, 'waiting for agent')
     await expectConnectionToClose(ports.clients[0])
 
@@ -238,7 +239,7 @@ test('server rejects mismatched and legacy protocol handshakes', { timeout: 15_0
     const env = topologyEnv(ports)
     const server = startChild('server', 'server.js', env)
     children.push(server)
-    await waitForOutput(server, 'Server listening on port')
+    await waitForListening(server, ports.service)
 
     const mismatch = await sendControlMessage(ports.service, {
       protocolVersion: PROTOCOL_VERSION + 1,
