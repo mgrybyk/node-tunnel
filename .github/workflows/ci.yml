@@ -15,8 +15,15 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
 
     steps:
       - name: Check out repository
@@ -31,7 +38,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check syntax
+      - name: Check syntax, lint, and formatting
         run: npm run check
 
       - name: Test with coverage

@@ -66,15 +66,11 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
 
     for (let agentIndex = 0; agentIndex < agentsCount; agentIndex++) {
       for (let clientIndex = 0; clientIndex < clientsPerAgent; clientIndex++) {
-        const client = startChild(
-          `client-${agentIndex}-${clientIndex}`,
-          'client.js',
-          {
-            ...commonEnv,
-            N_T_CLIENT_NAME: agentName(agentIndex),
-            N_T_CLIENT_PORT: String(ports.clients[localPortIndex++])
-          }
-        )
+        const client = startChild(`client-${agentIndex}-${clientIndex}`, 'client.js', {
+          ...commonEnv,
+          N_T_CLIENT_NAME: agentName(agentIndex),
+          N_T_CLIENT_PORT: String(ports.clients[localPortIndex++])
+        })
 
         client.agentIndex = agentIndex
         client.clientIndex = clientIndex
@@ -93,20 +89,19 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
         const backend = backends[client.agentIndex]
 
         for (let streamIndex = 0; streamIndex < streamsPerClient; streamIndex++) {
-          const seed = ((waveIndex + 1) * 10_000) +
-            (client.agentIndex * 1_000) +
-            (client.clientIndex * 100) +
-            streamIndex
-          const payload = createPayload(waveSizes[waveIndex] + seed % 997, seed)
+          const seed = (waveIndex + 1) * 10_000 + client.agentIndex * 1_000 + client.clientIndex * 100 + streamIndex
+          const payload = createPayload(waveSizes[waveIndex] + (seed % 997), seed)
 
-          streams.push(runTunnelStream({
-            localPort: client.localPort,
-            payload,
-            expectedBanner: backend.banner,
-            transformMask: backend.transformMask,
-            label: `wave=${waveIndex} agent=${client.agentIndex} client=${client.clientIndex} stream=${streamIndex}`,
-            writePattern: streamIndex
-          }))
+          streams.push(
+            runTunnelStream({
+              localPort: client.localPort,
+              payload,
+              expectedBanner: backend.banner,
+              transformMask: backend.transformMask,
+              label: `wave=${waveIndex} agent=${client.agentIndex} client=${client.clientIndex} stream=${streamIndex}`,
+              writePattern: streamIndex
+            })
+          )
         }
       }
 
@@ -127,11 +122,11 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
   }
 })
 
-function agentName (index) {
+function agentName(index) {
   return `e2e-agent-${index}`
 }
 
-async function startBackend (index) {
+async function startBackend(index) {
   const sockets = new Set()
   const errors = []
   const banner = createPayload(bannerSize, 50_000 + index)
@@ -169,14 +164,14 @@ async function startBackend (index) {
   return backend
 }
 
-function writeAndThrottle (socket, data) {
+function writeAndThrottle(socket, data) {
   if (socket.write(data)) return
 
   socket.pause()
   socket.once('drain', () => socket.resume())
 }
 
-function startChild (label, script, env) {
+function startChild(label, script, env) {
   const child = spawn(process.execPath, [path.join(projectRoot, script)], {
     cwd: projectRoot,
     env: { ...process.env, ...env },
@@ -184,13 +179,17 @@ function startChild (label, script, env) {
   })
   const info = { label, child, stdout: '', stderr: '' }
 
-  child.stdout.on('data', data => { info.stdout += data.toString() })
-  child.stderr.on('data', data => { info.stderr += data.toString() })
+  child.stdout.on('data', data => {
+    info.stdout += data.toString()
+  })
+  child.stderr.on('data', data => {
+    info.stderr += data.toString()
+  })
 
   return info
 }
 
-function waitForOutput (info, expected, timeout = startupTimeout) {
+function waitForOutput(info, expected, timeout = startupTimeout) {
   const allOutput = () => info.stdout + info.stderr
 
   if (allOutput().includes(expected)) return Promise.resolve()
@@ -229,7 +228,7 @@ function waitForOutput (info, expected, timeout = startupTimeout) {
   })
 }
 
-async function stopChild (info) {
+async function stopChild(info) {
   const child = info.child
   if (child.exitCode !== null || child.signalCode !== null) return
 
@@ -243,24 +242,19 @@ async function stopChild (info) {
   })
 }
 
-function formatChildLogs (children) {
+function formatChildLogs(children) {
   if (children.length === 0) return 'No child processes were started.'
 
-  return children.map(info => {
-    const output = `${info.stdout}${info.stderr}`.trim()
-    const tail = output.slice(-8_000)
-    return `--- ${info.label} ---\n${tail || '(no output)'}`
-  }).join('\n')
+  return children
+    .map(info => {
+      const output = `${info.stdout}${info.stderr}`.trim()
+      const tail = output.slice(-8_000)
+      return `--- ${info.label} ---\n${tail || '(no output)'}`
+    })
+    .join('\n')
 }
 
-function runTunnelStream ({
-  localPort,
-  payload,
-  expectedBanner,
-  transformMask,
-  label,
-  writePattern
-}) {
+function runTunnelStream({ localPort, payload, expectedBanner, transformMask, label, writePattern }) {
   const expected = Buffer.concat([expectedBanner, xor(payload, transformMask)])
 
   return new Promise((resolve, reject) => {
@@ -299,7 +293,7 @@ function runTunnelStream ({
       if (!settled) finish(new Error(`${label} socket closed before the response ended`))
     })
 
-    function finish (error) {
+    function finish(error) {
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -310,7 +304,7 @@ function runTunnelStream ({
   })
 }
 
-async function writePayload (socket, payload, patternIndex) {
+async function writePayload(socket, payload, patternIndex) {
   const patterns = [
     [payload.length],
     [64 * 1024],
@@ -330,7 +324,7 @@ async function writePayload (socket, payload, patternIndex) {
   }
 }
 
-function waitForDrain (socket) {
+function waitForDrain(socket) {
   return new Promise((resolve, reject) => {
     const onDrain = () => {
       cleanup()
@@ -356,18 +350,18 @@ function waitForDrain (socket) {
   })
 }
 
-function assertBuffersEqual (actual, expected, label) {
+function assertBuffersEqual(actual, expected, label) {
   if (actual.equals(expected)) return
 
   const firstDifference = findFirstDifference(actual, expected)
   assert.fail(
     `${label} response mismatch: actualLength=${actual.length}, ` +
-    `expectedLength=${expected.length}, firstDifference=${firstDifference}, ` +
-    `actualSha256=${sha256(actual)}, expectedSha256=${sha256(expected)}`
+      `expectedLength=${expected.length}, firstDifference=${firstDifference}, ` +
+      `actualSha256=${sha256(actual)}, expectedSha256=${sha256(expected)}`
   )
 }
 
-function findFirstDifference (actual, expected) {
+function findFirstDifference(actual, expected) {
   const comparedLength = Math.min(actual.length, expected.length)
   for (let index = 0; index < comparedLength; index++) {
     if (actual[index] !== expected[index]) return index
@@ -375,19 +369,19 @@ function findFirstDifference (actual, expected) {
   return comparedLength
 }
 
-function sha256 (data) {
+function sha256(data) {
   return crypto.createHash('sha256').update(data).digest('hex')
 }
 
-function createPayload (size, seed) {
+function createPayload(size, seed) {
   const payload = Buffer.allocUnsafe(size)
   for (let index = 0; index < size; index++) {
-    payload[index] = (seed + (index * 31) + ((index >>> 8) * 17)) & 0xff
+    payload[index] = (seed + index * 31 + (index >>> 8) * 17) & 0xff
   }
   return payload
 }
 
-function xor (data, mask) {
+function xor(data, mask) {
   const transformed = Buffer.allocUnsafe(data.length)
   for (let index = 0; index < data.length; index++) {
     transformed[index] = data[index] ^ mask
@@ -395,7 +389,7 @@ function xor (data, mask) {
   return transformed
 }
 
-async function reserveTopologyPorts (dataPortsCount, clientsCount) {
+async function reserveTopologyPorts(dataPortsCount, clientsCount) {
   const dataReservation = await reservePortRange(dataPortsCount)
   const otherReservations = []
 
@@ -418,7 +412,7 @@ async function reserveTopologyPorts (dataPortsCount, clientsCount) {
   }
 }
 
-async function reservePortRange (count) {
+async function reservePortRange(count) {
   for (let attempt = 0; attempt < 100; attempt++) {
     const base = 20_000 + Math.floor(Math.random() * (35_000 - count))
     const servers = []
@@ -430,7 +424,7 @@ async function reservePortRange (count) {
         servers.push(server)
       }
       return { base, servers }
-    } catch (error) {
+    } catch (_error) {
       await Promise.all(servers.map(closeServer))
     }
   }
@@ -438,13 +432,13 @@ async function reservePortRange (count) {
   throw new Error(`could not reserve ${count} consecutive ports`)
 }
 
-async function reservePort () {
+async function reservePort() {
   const server = net.createServer()
   await listen(server, 0)
   return { server, port: server.address().port }
 }
 
-function listen (server, port) {
+function listen(server, port) {
   return new Promise((resolve, reject) => {
     const onListening = () => {
       cleanup()
@@ -465,7 +459,7 @@ function listen (server, port) {
   })
 }
 
-function closeServer (server) {
+function closeServer(server) {
   if (!server.listening) return Promise.resolve()
   return new Promise(resolve => server.close(resolve))
 }

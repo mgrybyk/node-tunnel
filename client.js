@@ -1,224 +1,264 @@
 'use strict'
 
+const { EventEmitter } = require('node:events')
 const net = require('node:net')
 const { randomUUID } = require('node:crypto')
+const { loadEnvironment, getClientConfig } = require('./config')
+
+if (require.main === module) loadEnvironment(process.argv[2])
+
 const { PROTOCOL_VERSION, ERRORS } = require('./protocol')
-const {
-  tryParseJSON,
-  log,
-  removeElement,
-  writeMessage,
-  createMessageDecoder,
-  createFirstMessageDecoder,
-  readInteger,
-  readPort
-} = require('./utils')
+const { tryParseJSON, log, writeMessage, createMessageDecoder, createFirstMessageDecoder } = require('./utils')
+const { createBackoff, stopListening, destroySockets, waitForSockets, runCli } = require('./lifecycle')
 
-const clientName = process.env.N_T_CLIENT_NAME || 'dbg'
+function createClient(config = getClientConfig()) {
+  const events = new EventEmitter()
+  const localConnections = new Set()
+  const dataConnections = new Set()
+  const backoff = createBackoff({
+    baseDelay: config.reconnectDelay,
+    maxDelay: config.reconnectMaxDelay,
+    jitterPercent: config.reconnectJitterPercent
+  })
 
-if (clientName.length > 128) {
-  log.info('Name should not be more than 128 symbols length.')
-  process.exit(1)
-}
-const serverHost = process.env.N_T_SERVER_HOST || 'localhost'
-const serverPort = readPort('N_T_SERVER_PORT', 1337)
-const localPort = readPort('N_T_CLIENT_PORT', 8000)
-const reconnectDelay = readInteger('N_T_RECONNECT_DELAY_MS', 5_000, { min: 100, max: 300_000 })
-const handshakeTimeout = readInteger('N_T_HANDSHAKE_TIMEOUT_MS', 10_000, { min: 100, max: 300_000 })
+  let localServer
+  let serviceClient
+  let reconnectTimer
+  let pinger
+  let dataJson
+  let started = false
+  let stopping = false
+  let closePromise
+  let fatalError = false
+  let isDataClient = false
+  let connectionToServerLost = false
 
-let connectionToServerLost = false
-let fatalError = false
-let localConnections = []
-let dataConnections = []
+  function start() {
+    if (started) return Promise.resolve()
+    if (stopping) return Promise.reject(new Error('client is closing'))
 
-let serviceClient
-let isDataClient = false
-let reconnectTimer
-let pinger
+    localServer = net.createServer({ pauseOnConnect: true, allowHalfOpen: true }, handleLocalSocket)
 
-let dataJson
+    return new Promise((resolve, reject) => {
+      const onStartupError = error => {
+        localServer.off('listening', onListening)
+        reject(error)
+      }
+      const onListening = () => {
+        localServer.off('error', onStartupError)
+        localServer.on('error', onRuntimeError)
+        started = true
+        log.info(`Client listening on port ${config.localPort}. Connecting to server...`)
+        connect()
+        resolve()
+      }
 
-// local
-let localServer = net.createServer({ pauseOnConnect: true, allowHalfOpen: true }, localSocket => {
-  let isDataClientConnected = false
-
-  if (!isDataClient || !dataJson) {
-    return localSocket.destroy()
+      localServer.once('error', onStartupError)
+      localServer.once('listening', onListening)
+      localServer.listen(config.localPort)
+    })
   }
 
-  localConnections.push(localSocket)
-  let dataClient = new net.Socket({ allowHalfOpen: true })
-  dataClient.uuid = 'client-' + randomUUID()
-  dataConnections.push(dataClient)
-  dataClient.setTimeout(handshakeTimeout, () => dataClient.destroy())
-  dataClient.on('connect', () => {
-    writeMessage(dataClient, JSON.stringify({
-      protocolVersion: PROTOCOL_VERSION,
-      type: 'client',
-      uuid: dataClient.uuid
-    }))
-  })
-  const decodeReady = createFirstMessageDecoder((message, remainder) => {
-    const readyMessage = tryParseJSON(message)
-    if (!readyMessage || readyMessage.protocolVersion !== PROTOCOL_VERSION || !readyMessage.ready) {
-      return dataClient.destroy()
-    }
+  function onRuntimeError(error) {
+    log.info('Something went wrong with client server. Stopping...\n', error.name || error.code, error.message)
+    stopFatal(error.message)
+  }
 
-    dataClient.removeListener('data', decodeReady)
-    dataClient.setTimeout(0)
-    dataClient
-      .pipe(localSocket)
-      .pipe(dataClient)
-    isDataClientConnected = true
-    if (remainder.length > 0) localSocket.write(remainder)
-    localSocket.resume()
-  }, () => dataClient.destroy())
-  dataClient.on('data', decodeReady)
+  function handleLocalSocket(localSocket) {
+    if (!isDataClient || !dataJson || stopping) return localSocket.destroy()
 
-  dataClient.connect(dataJson.port, serverHost)
+    localConnections.add(localSocket)
+    const dataClient = new net.Socket({ allowHalfOpen: true })
+    let isPiped = false
 
-  dataClient.on('close', hadError => {
-    dataClient.removeListener('data', decodeReady)
-    removeElement(dataConnections, dataClient)
-    if (hadError) log.err(`closed dataClient (${dataClient.uuid})`)
-    if (localSocket && !localSocket.destroyed) {
-      if (hadError) localSocket.destroy()
-      else if (!localSocket.writableEnded) localSocket.end()
-    }
-  })
-  dataClient.on('error', err => log.err('DATA_CLIENT', err.name || err.code, err.message))
-  localSocket.on('error', err => log.err('LOCAL_SOCKET', err.name || err.code, err.message))
+    dataClient.uuid = `client-${randomUUID()}`
+    dataConnections.add(dataClient)
+    dataClient.setTimeout(config.handshakeTimeout, () => dataClient.destroy())
+    dataClient.on('connect', () => {
+      writeMessage(
+        dataClient,
+        JSON.stringify({
+          protocolVersion: PROTOCOL_VERSION,
+          type: 'client',
+          uuid: dataClient.uuid
+        })
+      )
+    })
 
-  localSocket.on('close', hadError => {
-    removeElement(localConnections, localSocket)
-    if (isDataClientConnected) {
-      dataClient
-        .unpipe(localSocket)
-        .unpipe(dataClient)
+    const decodeReady = createFirstMessageDecoder(
+      (message, remainder) => {
+        const readyMessage = tryParseJSON(message)
+        if (!readyMessage || readyMessage.protocolVersion !== PROTOCOL_VERSION || !readyMessage.ready) {
+          return dataClient.destroy()
+        }
+
+        dataClient.removeListener('data', decodeReady)
+        dataClient.setTimeout(0)
+        dataClient.pipe(localSocket).pipe(dataClient)
+        isPiped = true
+        if (remainder.length > 0) localSocket.write(remainder)
+        localSocket.resume()
+      },
+      () => dataClient.destroy()
+    )
+
+    dataClient.on('data', decodeReady)
+    dataClient.on('error', error => log.err('DATA_CLIENT', error.name || error.code, error.message))
+    dataClient.on('close', hadError => {
+      dataClient.removeListener('data', decodeReady)
+      dataConnections.delete(dataClient)
+      if (hadError) log.err(`closed dataClient (${dataClient.uuid})`)
+      if (!localSocket.destroyed) {
+        if (hadError) localSocket.destroy()
+        else if (!localSocket.writableEnded) localSocket.end()
+      }
+    })
+
+    localSocket.on('error', error => log.err('LOCAL_SOCKET', error.name || error.code, error.message))
+    localSocket.on('close', hadError => {
+      localConnections.delete(localSocket)
+      const wasPiped = isPiped
+      if (wasPiped) {
+        dataClient.unpipe(localSocket)
+        localSocket.unpipe(dataClient)
+        isPiped = false
+      }
       if (!dataClient.destroyed) {
-        if (hadError) dataClient.destroy()
+        if (hadError || !wasPiped) dataClient.destroy()
         else if (!dataClient.writableEnded) dataClient.end()
       }
+    })
+
+    dataClient.connect(dataJson.port, config.serverHost)
+  }
+
+  function onServiceMessage(socket, data) {
+    const message = tryParseJSON(data)
+    if (!message || typeof message !== 'object') return socket.destroy()
+    if (message.protocolVersion !== PROTOCOL_VERSION) {
+      return stopFatal(
+        `${ERRORS.VERSION_MISMATCH}: client=${PROTOCOL_VERSION}, server=${message.protocolVersion ?? 'unknown'}`
+      )
     }
-  })
-})
-localServer.listen(localPort)
-localServer.on('listening', listener => log.info(`Client listening on port ${localPort}. Connecting to server...`))
-localServer.on('error', err => {
-  log.info('Something went wrong with client server. Stopping...\n', err.name || err.code, err.message)
-  localServer.close()
-  process.exit(1)
-})
+    if (message.error) return stopFatal(message.error)
 
-function onServiceMessage (socket, data) {
-  let tmpJson = tryParseJSON(data)
-  if (!tmpJson || typeof tmpJson !== 'object') return socket.destroy()
-  if (tmpJson.protocolVersion !== PROTOCOL_VERSION) {
-    return stopFatal(
-      `${ERRORS.VERSION_MISMATCH}: client=${PROTOCOL_VERSION}, server=${tmpJson.protocolVersion ?? 'unknown'}`
+    backoff.reset()
+    if (message.pong) return
+    if (message.agentDied || !message.port) {
+      dataJson = null
+      isDataClient = false
+      return
+    }
+
+    dataJson = message
+    log.debug(dataJson)
+    isDataClient = true
+    log.info('Agent found, ready!')
+  }
+
+  function connect() {
+    if (stopping || fatalError) return
+
+    const socket = new net.Socket()
+    const decodeServiceMessage = createMessageDecoder(
+      data => onServiceMessage(socket, data),
+      () => socket.destroy()
     )
+    serviceClient = socket
+
+    socket.on('data', decodeServiceMessage)
+    socket.on('connect', () => {
+      connectionToServerLost = false
+      log.info('Connection to server established, waiting for agent.')
+      const message = { protocolVersion: PROTOCOL_VERSION, type: 'client', name: config.name }
+      if (dataJson?.uuid) message.uuid = dataJson.uuid
+      writeMessage(socket, JSON.stringify(message))
+      startPinger(socket)
+      if (dataJson) isDataClient = true
+    })
+    socket.on('error', error => log.err('SERVICE_SOCKET', error.name || error.code, error.message))
+    socket.on('close', () => {
+      socket.removeListener('data', decodeServiceMessage)
+      if (socket !== serviceClient) return
+
+      if (!connectionToServerLost && !stopping) {
+        connectionToServerLost = true
+        log.info('Connection to server lost')
+      }
+      clearPinger()
+      isDataClient = false
+      if (!stopping && !fatalError) connectWithDelay(backoff.next())
+    })
+    socket.connect(config.serverPort, config.serverHost)
   }
-  if (tmpJson.error) return stopFatal(tmpJson.error)
-  if (tmpJson.pong) return
-  if (tmpJson.agentDied || !tmpJson.port) {
-    dataJson = null
-    return
+
+  function connectWithDelay(delay) {
+    if (stopping || fatalError) return
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined
+      connect()
+    }, delay)
   }
-  dataJson = tmpJson
-  log.debug(dataJson)
-  if (dataJson.port === null) return
-  log.info('Agent found, ready!')
-  isDataClient = true
-}
 
-function connect () {
-  if (fatalError) return
-
-  const socket = new net.Socket()
-  const decodeServiceMessage = createMessageDecoder(
-    data => onServiceMessage(socket, data),
-    () => socket.destroy()
-  )
-  serviceClient = socket
-
-  socket.on('data', decodeServiceMessage)
-  socket.on('connect', () => {
-    connectionToServerLost = false
-    log.info('Connection to server established, waiting for agent.')
-    let msg = { protocolVersion: PROTOCOL_VERSION, type: 'client', name: clientName }
-    if (dataJson && dataJson.uuid) msg.uuid = dataJson.uuid
-    writeMessage(socket, JSON.stringify(msg))
-    if (pinger) clearInterval(pinger)
+  function startPinger(socket) {
+    clearPinger()
     pinger = setInterval(() => {
       writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ping: Math.random() }))
-    }, 15000)
-    if (dataJson) isDataClient = true
-  })
-  socket.on('error', err => log.err('SERVICE_SOCKET', err.name || err.code, err.message))
-  socket.on('close', () => {
-    socket.removeListener('data', decodeServiceMessage)
-    if (socket !== serviceClient) return
+    }, 15_000)
+  }
 
-    if (!connectionToServerLost) {
-      connectionToServerLost = true
-      log.info('Connection to server lost')
-    }
+  function clearPinger() {
     if (pinger) clearInterval(pinger)
     pinger = undefined
-    isDataClient = false
-    if (!fatalError) connectWithDelay(reconnectDelay)
-  })
-
-  socket.connect(serverPort, serverHost)
-}
-
-function connectWithDelay (delay) {
-  if (fatalError) return
-  if (reconnectTimer) clearTimeout(reconnectTimer)
-  if (!delay) return connect()
-
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = undefined
-    connect()
-  }, delay)
-}
-
-function stopFatal (message) {
-  if (fatalError) return
-  fatalError = true
-  log.info(message)
-  if (reconnectTimer) clearTimeout(reconnectTimer)
-  if (pinger) clearInterval(pinger)
-  if (serviceClient && !serviceClient.destroyed) serviceClient.destroy()
-  setImmediate(() => process.exit(1))
-}
-
-connectWithDelay(500)
-
-process.on('exit', (code) => {
-  log.info(`Stopping client, trying to close connections - Local: ${localConnections.length}, Data: ${dataConnections.length}`)
-  localConnections.forEach(localConnection => {
-    if (localConnection && !localConnection.destroyed) {
-      localConnection.unpipe()
-      localConnection.destroy()
-    }
-  })
-  dataConnections.forEach(dataConnection => {
-    if (dataConnection && !dataConnection.destroyed) {
-      dataConnection.unpipe()
-      dataConnection.destroy()
-    }
-  })
-  if (serviceClient) {
-    serviceClient.end()
-    serviceClient.destroy()
   }
-})
 
-process.on('SIGINT', () => {
-  process.exit()
-})
+  function stopFatal(message) {
+    if (fatalError) return
+    fatalError = true
+    log.info(message)
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    clearPinger()
+    if (serviceClient && !serviceClient.destroyed) serviceClient.destroy()
+    events.emit('fatal', new Error(message))
+  }
 
-process.on('SIGTERM', () => {
-  process.exit()
-})
+  function close({ force = false } = {}) {
+    if (closePromise) return closePromise
+    stopping = true
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = undefined
+    clearPinger()
+    stopListening(localServer)
+
+    closePromise = (async () => {
+      if (!force) await waitForSockets(dataConnections, config.shutdownTimeout)
+      destroySockets(localConnections)
+      destroySockets(dataConnections)
+      if (serviceClient) serviceClient.destroy()
+      if (localServer?.closeAllConnections) localServer.closeAllConnections()
+      await new Promise(resolve => setImmediate(resolve))
+      started = false
+      log.info(`Client stopped. Local connections: ${localConnections.size}, data connections: ${dataConnections.size}`)
+    })()
+
+    return closePromise
+  }
+
+  function getState() {
+    return {
+      started,
+      stopping,
+      localConnections: localConnections.size,
+      dataConnections: dataConnections.size,
+      connected: Boolean(serviceClient && !serviceClient.destroyed),
+      ready: isDataClient
+    }
+  }
+
+  return Object.assign(events, { start, close, getState })
+}
+
+module.exports = { createClient }
+
+if (require.main === module) runCli(createClient)

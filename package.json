@@ -1,20 +1,62 @@
 {
   "name": "node-tunnel",
   "version": "0.1.0",
-  "description": "",
+  "description": "Expose TCP services behind NAT through a public relay server",
+  "main": "server.js",
+  "exports": {
+    ".": "./server.js",
+    "./agent": "./agent.js",
+    "./client": "./client.js",
+    "./config": "./config.js",
+    "./protocol": "./protocol.js"
+  },
+  "files": [
+    "agent.js",
+    "client.js",
+    "config.js",
+    "lifecycle.js",
+    "protocol.js",
+    "server.js",
+    "utils.js",
+    ".env-example",
+    "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=24"
   },
-  "main": "",
   "devDependencies": {
+    "@biomejs/biome": "^2.5.9",
     "c8": "^12.0.0"
   },
   "scripts": {
-    "check": "node --check protocol.js && node --check utils.js && node --check server.js && node --check agent.js && node --check client.js && node --check test/crypto.test.js && node --check test/protocol.test.js && node --check test/e2e.test.js && node --check test/reliability.test.js && node --check test/helpers.js && node --check test/local-remote.js",
-    "test": "node --test test/*.test.js",
-    "test:coverage": "c8 --all --include='*.js' --exclude='test/**' --check-coverage --per-file --statements 75 --lines 75 --functions 85 --branches 55 node --test test/*.test.js"
+    "start:server": "node server.js",
+    "start:agent": "node agent.js",
+    "start:client": "node client.js",
+    "check": "npm run check:syntax && npm run lint && npm run format:check",
+    "check:syntax": "node --check config.js && node --check lifecycle.js && node --check protocol.js && node --check utils.js && node --check server.js && node --check agent.js && node --check client.js && node --check test/crypto.test.js && node --check test/protocol.test.js && node --check test/lifecycle.test.js && node --check test/e2e.test.js && node --check test/reliability.test.js && node --check test-support/helpers.js && node --check scripts/local-remote.js",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "test": "node --test",
+    "test:coverage": "c8 node --test"
   },
-  "keywords": [],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mgrybyk/node-tunnel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mgrybyk/node-tunnel/issues"
+  },
+  "homepage": "https://github.com/mgrybyk/node-tunnel#readme",
+  "keywords": [
+    "tcp",
+    "tunnel",
+    "port-forwarding",
+    "nat"
+  ],
   "author": "mgrybyk",
-  "license": "ISC"
+  "license": "MIT"
 }

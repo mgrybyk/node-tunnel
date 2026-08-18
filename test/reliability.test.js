@@ -22,7 +22,7 @@ const {
   listen,
   closeServer,
   waitForSocketClose
-} = require('./helpers')
+} = require('../test-support/helpers')
 
 const cryptKey = process.env.N_T_CRYPT_KEY
 
@@ -141,9 +141,11 @@ test('connection resets and a slow reader do not poison later streams', { timeou
     children.push(server, agent, client)
 
     await waitForOutput(client, 'Agent found, ready!')
-    await Promise.all(Array.from({ length: 10 }, (_, index) => {
-      return resetConnection(ports.clients[0], Buffer.alloc(256 * 1024, index))
-    }))
+    await Promise.all(
+      Array.from({ length: 10 }, (_, index) => {
+        return resetConnection(ports.clients[0], Buffer.alloc(256 * 1024, index))
+      })
+    )
     await delay(200)
 
     const payload = Buffer.alloc(4 * 1024 * 1024)
@@ -264,10 +266,13 @@ test('agent and client exit when a server reports another protocol version', { t
 
   try {
     const fakeServer = net.createServer(socket => {
-      writeMessage(socket, JSON.stringify({
-        protocolVersion: PROTOCOL_VERSION + 1,
-        error: ERRORS.VERSION_MISMATCH
-      }))
+      writeMessage(
+        socket,
+        JSON.stringify({
+          protocolVersion: PROTOCOL_VERSION + 1,
+          error: ERRORS.VERSION_MISMATCH
+        })
+      )
       socket.end()
     })
     await listen(fakeServer)
@@ -306,7 +311,7 @@ test('agent and client exit when a server reports another protocol version', { t
   }
 })
 
-function topologyEnv (ports) {
+function topologyEnv(ports) {
   return {
     N_T_CRYPT_KEY: cryptKey,
     N_T_LOG_DEBUG: 'false',
@@ -321,11 +326,11 @@ function topologyEnv (ports) {
   }
 }
 
-function createEchoServer () {
+function createEchoServer() {
   return net.createServer({ allowHalfOpen: true }, socket => socket.pipe(socket))
 }
 
-function assertEcho (port, payload, timeout = 5_000, readPause = 0) {
+function assertEcho(port, payload, timeout = 5_000, readPause = 0) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let length = 0
@@ -353,7 +358,7 @@ function assertEcho (port, payload, timeout = 5_000, readPause = 0) {
     })
     socket.on('error', finish)
 
-    function finish (error) {
+    function finish(error) {
       clearTimeout(timer)
       socket.destroy()
       if (error) reject(error)
@@ -362,7 +367,7 @@ function assertEcho (port, payload, timeout = 5_000, readPause = 0) {
   })
 }
 
-function resetConnection (port, payload) {
+function resetConnection(port, payload) {
   return new Promise(resolve => {
     const socket = net.createConnection({ host, port })
     socket.on('connect', () => {
@@ -375,7 +380,7 @@ function resetConnection (port, payload) {
   })
 }
 
-function expectConnectionToClose (port, payload, timeout = 5_000) {
+function expectConnectionToClose(port, payload, timeout = 5_000) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host, port })
     const timer = setTimeout(() => {
@@ -394,23 +399,26 @@ function expectConnectionToClose (port, payload, timeout = 5_000) {
   })
 }
 
-function sendControlMessage (port, message) {
+function sendControlMessage(port, message) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host, port })
     const timer = setTimeout(() => finish(new Error('control response timed out')), 5_000)
-    const decode = createMessageDecoder(data => {
-      try {
-        finish(null, JSON.parse(data))
-      } catch (error) {
-        finish(error)
-      }
-    }, () => finish(new Error('server returned an invalid control frame')))
+    const decode = createMessageDecoder(
+      data => {
+        try {
+          finish(null, JSON.parse(data))
+        } catch (error) {
+          finish(error)
+        }
+      },
+      () => finish(new Error('server returned an invalid control frame'))
+    )
 
     socket.on('connect', () => writeMessage(socket, JSON.stringify(message)))
     socket.on('data', decode)
     socket.on('error', error => finish(error))
 
-    function finish (error, response) {
+    function finish(error, response) {
       clearTimeout(timer)
       socket.destroy()
       if (error) reject(error)
@@ -419,7 +427,7 @@ function sendControlMessage (port, message) {
   })
 }
 
-function registerCleanup (t, children, servers) {
+function registerCleanup(t, children, servers) {
   t.after(async () => {
     await Promise.all(children.map(stopChild))
     await Promise.all(servers.map(closeServer))

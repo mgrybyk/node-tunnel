@@ -1,14 +1,14 @@
 ## node-tunnel
 
-> NodeJS port forwarding implementation
+> Node.js TCP port-forwarding implementation
 
 Allows you to open to forward any custom port (rdp, ssh, proxies, whatever) from machine in some private network (with no public ip) to another machine anywhere else through some server with public ip.
 
 ![](https://github.com/mgrybyk/node-tunnel/blob/images-only/imgs/client-server-agent.png?raw=true)
 
-1. have Node.js 24 LTS or newer and npm
-2. clone repo
-3. npm ci
+1. Have Node.js 24 LTS or newer and npm.
+2. Clone the repository.
+3. Run `npm ci`.
 
 **WARN: data is NOT encrypted at the moment, except service messages!**
 
@@ -20,6 +20,9 @@ Run the automated unit and end-to-end suite with:
 npm test
 npm run test:coverage
 ```
+
+Run all syntax, lint, and formatting checks with `npm run check`. CI runs those
+checks and the coverage-gated suite on Ubuntu and Windows.
 
 The end-to-end test starts the real server, two agents, and six clients on
 loopback ports. It runs 72 tunnel connections across three traffic waves, with
@@ -40,6 +43,11 @@ N_T_SERVER_PORTS_FROM=32131
 N_T_SERVER_PORTS_TO=32141
 ```
 NOTE: ports specified should be accessible from internet
+
+Start it with `npm run start:server`. The agent and client equivalents are
+`npm run start:agent` and `npm run start:client`. Each command loads `.env` by
+default; pass a different file after `--`, for example
+`npm run start:server -- production.env`.
 
 ### agent
 
@@ -112,9 +120,33 @@ Optional reliability settings are:
 
 ```sh
 N_T_RECONNECT_DELAY_MS=5000
+N_T_RECONNECT_MAX_DELAY_MS=30000
+N_T_RECONNECT_JITTER_PERCENT=20
 N_T_HANDSHAKE_TIMEOUT_MS=10000
 N_T_CONTROL_IDLE_TIMEOUT_MS=45000
+N_T_SHUTDOWN_TIMEOUT_MS=5000
 ```
+
+Reconnect delays use exponential backoff capped by
+`N_T_RECONNECT_MAX_DELAY_MS`; jitter reduces synchronized reconnect storms.
+On `SIGINT` or `SIGTERM`, each process stops accepting new work and gives active
+streams up to `N_T_SHUTDOWN_TIMEOUT_MS` to finish before forcing them closed.
+
+### JavaScript API
+
+The entry points are safe to import and expose lifecycle factories:
+
+```js
+const { createServer } = require('node-tunnel')
+
+const server = createServer(options)
+await server.start()
+await server.close()
+```
+
+`node-tunnel/agent` exports `createAgent`, and `node-tunnel/client` exports
+`createClient`. Configuration objects can be built from the environment with
+the helpers exported by `node-tunnel/config`.
 
 
 ### one more img example :)
@@ -146,3 +178,12 @@ If you still want/need it - feel free.*
 ## security
 
 The remaining known security limitations are tracked in [SECURITY.md](SECURITY.md).
+
+## release checklist
+
+Before a release, run `npm ci`, `npm run check`, `npm run test:coverage`, and
+`npm pack --dry-run`; then update `CHANGELOG.md` and the package version. Bump
+`PROTOCOL_VERSION` only when server-agent-client communication is no longer
+wire-compatible, such as changing required messages, framing, or handshake
+semantics. Internal refactors and configuration-only changes do not require a
+protocol bump.

@@ -7,7 +7,7 @@ const { spawn } = require('node:child_process')
 const projectRoot = path.resolve(__dirname, '..')
 const host = '127.0.0.1'
 
-function startChild (label, script, env) {
+function startChild(label, script, env) {
   const child = spawn(process.execPath, [path.join(projectRoot, script)], {
     cwd: projectRoot,
     env: { ...process.env, ...env },
@@ -15,17 +15,21 @@ function startChild (label, script, env) {
   })
   const info = { label, child, stdout: '', stderr: '' }
 
-  child.stdout.on('data', data => { info.stdout += data.toString() })
-  child.stderr.on('data', data => { info.stderr += data.toString() })
+  child.stdout.on('data', data => {
+    info.stdout += data.toString()
+  })
+  child.stderr.on('data', data => {
+    info.stderr += data.toString()
+  })
 
   return info
 }
 
-function waitForOutput (info, expected, timeout = 10_000) {
+function waitForOutput(info, expected, timeout = 10_000) {
   return waitForOutputCount(info, expected, 1, timeout)
 }
 
-function waitForOutputCount (info, expected, count, timeout = 10_000) {
+function waitForOutputCount(info, expected, count, timeout = 10_000) {
   const matches = () => (info.stdout + info.stderr).split(expected).length - 1
   if (matches() >= count) return Promise.resolve()
 
@@ -62,7 +66,7 @@ function waitForOutputCount (info, expected, count, timeout = 10_000) {
   })
 }
 
-function waitForExit (info, timeout = 10_000) {
+function waitForExit(info, timeout = 10_000) {
   if (info.child.exitCode !== null || info.child.signalCode !== null) {
     return Promise.resolve({ code: info.child.exitCode, signal: info.child.signalCode })
   }
@@ -91,7 +95,7 @@ function waitForExit (info, timeout = 10_000) {
   })
 }
 
-async function stopChild (info) {
+async function stopChild(info) {
   const child = info.child
   if (child.exitCode !== null || child.signalCode !== null) return
 
@@ -105,16 +109,18 @@ async function stopChild (info) {
   })
 }
 
-function formatChildLogs (children) {
+function formatChildLogs(children) {
   if (children.length === 0) return 'No child processes were started.'
 
-  return children.map(info => {
-    const output = `${info.stdout}${info.stderr}`.trim()
-    return `--- ${info.label} ---\n${output.slice(-8_000) || '(no output)'}`
-  }).join('\n')
+  return children
+    .map(info => {
+      const output = `${info.stdout}${info.stderr}`.trim()
+      return `--- ${info.label} ---\n${output.slice(-8_000) || '(no output)'}`
+    })
+    .join('\n')
 }
 
-async function reserveTopologyPorts (dataPortsCount, clientsCount) {
+async function reserveTopologyPorts(dataPortsCount, clientsCount) {
   const dataReservation = await reservePortRange(dataPortsCount)
   const otherReservations = []
 
@@ -137,7 +143,7 @@ async function reserveTopologyPorts (dataPortsCount, clientsCount) {
   }
 }
 
-async function reservePortRange (count) {
+async function reservePortRange(count) {
   for (let attempt = 0; attempt < 100; attempt++) {
     const base = 20_000 + Math.floor(Math.random() * (35_000 - count))
     const servers = []
@@ -149,7 +155,7 @@ async function reservePortRange (count) {
         servers.push(server)
       }
       return { base, servers }
-    } catch (error) {
+    } catch (_error) {
       await Promise.all(servers.map(closeServer))
     }
   }
@@ -157,13 +163,13 @@ async function reservePortRange (count) {
   throw new Error(`could not reserve ${count} consecutive ports`)
 }
 
-async function reservePort () {
+async function reservePort() {
   const server = net.createServer()
   await listen(server, 0)
   return { server, port: server.address().port }
 }
 
-function listen (server, port = 0) {
+function listen(server, port = 0) {
   return new Promise((resolve, reject) => {
     const onListening = () => {
       cleanup()
@@ -184,7 +190,7 @@ function listen (server, port = 0) {
   })
 }
 
-function closeServer (server) {
+function closeServer(server) {
   if (!server.listening) return Promise.resolve()
   return new Promise(resolve => {
     let settled = false
@@ -200,7 +206,7 @@ function closeServer (server) {
   })
 }
 
-function waitForSocketClose (socket, timeout = 5_000) {
+function waitForSocketClose(socket, timeout = 5_000) {
   if (socket.closed || socket.destroyed) return Promise.resolve()
 
   return new Promise((resolve, reject) => {

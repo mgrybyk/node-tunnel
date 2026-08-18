@@ -12,18 +12,21 @@ entry point is a long-running Node.js process.
 
 ## File map
 
-- `server.js`: public control server, dynamic data-port allocation, connection
-  matching, and bidirectional socket piping.
+- `server.js`: public control server factory, dynamic data-port allocation,
+  connection matching, and bidirectional socket piping.
 - `agent.js`: maintains an outbound control connection to the public server and
   opens one data connection per client request. Each data connection is piped to
   `N_T_AGENT_DATA_HOST:N_T_AGENT_DATA_PORT`.
 - `client.js`: listens on `N_T_CLIENT_PORT`, maintains an outbound control
   connection, and opens one server data connection per accepted local socket.
 - `protocol.js`: shared protocol version, peer roles, and protocol error strings.
-- `utils.js`: loads `.env` through Node's native API, owns configuration/logging
-  helpers, validates role names, and implements control/handshake encryption.
+- `config.js`: native `.env` loading and validated configuration builders for
+  all three roles.
+- `lifecycle.js`: shared reconnect backoff, socket-drain, and CLI shutdown
+  helpers.
+- `utils.js`: logging, message validation, and control/handshake encryption.
 - `.env-example`: all supported environment variables and development defaults.
-- `test/local-remote.js`: manual smoke harness. It combines a mock agent-side
+- `scripts/local-remote.js`: manual smoke harness. It combines a mock agent-side
   echo service with a periodic connection to the client-side listener; it is not
   an automated test suite.
 - `test/crypto.test.js`: control-message encryption regression test.
@@ -33,7 +36,11 @@ entry point is a long-running Node.js process.
   scenarios.
 - `test/protocol.test.js`: frame fragmentation, coalescing, validation, and
   configuration unit tests.
-- `test/helpers.js`: bounded child-process and loopback-network test helpers.
+- `test/lifecycle.test.js`: factory API, reconnect backoff, graceful active
+  stream draining, and server-state churn tests.
+- `test-support/helpers.js`: bounded child-process and loopback-network test
+  helpers, deliberately kept outside `test/` so default test discovery does not
+  execute it as a test file.
 - `SECURITY.md`: explicitly deferred security work; keep it current when a
   limitation is fixed or newly discovered.
 - `README.md`: user-facing setup, deployment, and security warning.
@@ -67,10 +74,12 @@ socket switches to the unframed data plane.
 
 ## Configuration and invocation
 
-Every entry point imports `utils.js` before reading environment variables, so
-Node's native `.env` loading happens as a side effect. With no argument it reads
+CLI entry points load `.env` through `config.js`. With no argument they read
 `.env`; the first positional argument selects another environment file. A
 missing file is allowed because process environments can provide all settings.
+Importing an entry point does not load an environment file or open sockets;
+call its exported `createServer`, `createAgent`, or `createClient` factory and
+then `start()` explicitly. Each instance also exposes asynchronous `close()`.
 
 The supported runtime baseline is Node.js 24 or newer.
 
@@ -82,7 +91,7 @@ npm ci
 node server.js .env
 node agent.js .env
 node client.js .env
-node test/local-remote.js .env
+node scripts/local-remote.js .env
 ```
 
 Run the four Node processes in separate terminals. The example assigns the
@@ -98,6 +107,9 @@ npm run check
 npm test
 npm run test:coverage
 ```
+
+`npm run check` enforces syntax, Biome lint rules, and formatting. CI runs the
+same checks and coverage suite on Ubuntu and Windows.
 
 The E2E test reserves ephemeral loopback ports, spawns the actual entry points,
 and cleans up every child process and socket. Each run creates 72 tunnel
@@ -119,13 +131,19 @@ half-closed request streams.
   may bind to non-loopback interfaces. Do not assume it is localhost-only.
 - Names plus a shared secret are the effective authorization mechanism. There is
   no per-agent/client identity or access-control layer.
-- Server state is held in the module-level `connections`, `pipes`, and `ports`
-  objects/array. Disconnect and reconnection changes must preserve port release,
+- Server state is private to each `createServer()` instance. Disconnect and
+  reconnection changes must preserve empty-group cleanup, port release,
   paired-socket cleanup, and the single-agent-per-name rule.
-- Reconnects create fresh control sockets and decoders. Reliability tests use
-  short configured delays; production defaults remain five seconds.
-- GitHub Actions runs syntax and coverage-gated tests on pull requests and pushes
-  to `master`.
+- Reconnects create fresh control sockets and decoders. Delay grows
+  exponentially with bounded jitter and resets after a valid server message.
+- `SIGINT` and `SIGTERM` use the asynchronous lifecycle API: listeners stop
+  first, active streams receive a bounded drain window, and remaining sockets
+  are then destroyed.
+- Protocol version equality is strict. Increment `PROTOCOL_VERSION` only for a
+  wire-incompatible communication change (required messages, framing,
+  handshakes, or their semantics), not for internal refactors or configuration.
+- GitHub Actions runs checks and coverage-gated tests on pull requests and
+  pushes to `master`, using both Ubuntu and Windows runners.
 
 Do not silently fix these constraints while doing unrelated work. Capture their
 behavior in tests first, then make intentional compatibility or security choices.

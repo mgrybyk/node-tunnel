@@ -2,12 +2,7 @@
 
 const crypto = require('node:crypto')
 const { PROTOCOL_VERSION, TYPES } = require('./protocol')
-
-try {
-  process.loadEnvFile(process.argv[2] || '.env')
-} catch (error) {
-  if (error.code !== 'ENOENT') throw error
-}
+const { readInteger, readPort } = require('./config')
 
 const logDebug = process.env.N_T_LOG_DEBUG === 'true'
 const logError = process.env.N_T_LOG_ERROR === 'true'
@@ -15,17 +10,19 @@ const logError = process.env.N_T_LOG_ERROR === 'true'
 module.exports.types = TYPES
 module.exports.protocolVersion = PROTOCOL_VERSION
 
-module.exports.removeElement = function (array, element) {
-  let idx = array.indexOf(element)
+module.exports.removeElement = (array, element) => {
+  const idx = array.indexOf(element)
   if (idx >= 0) {
     array.splice(idx, 1)
   }
 }
 
-let log = {
-  info (...args) { console.log('INFO:', ...args) },
-  debug () {},
-  err () {}
+const log = {
+  info(...args) {
+    console.log('INFO:', ...args)
+  },
+  debug() {},
+  err() {}
 }
 
 if (logDebug) {
@@ -35,18 +32,17 @@ if (logError) {
   log.err = (...args) => console.error('ERR:', ...args)
 }
 
-module.exports.tryParseJSON = function (json, reviver) {
+module.exports.tryParseJSON = (json, reviver) => {
   try {
     return JSON.parse(json, reviver)
-  } catch (error) {
+  } catch (_error) {
     log.err('JSON', json)
     return null
   }
 }
 
 module.exports.verifyDataJson = dataJson => {
-  if (!dataJson || typeof dataJson !== 'object' ||
-      (dataJson.type !== TYPES.CLIENT && dataJson.type !== TYPES.AGENT)) {
+  if (!dataJson || typeof dataJson !== 'object' || (dataJson.type !== TYPES.CLIENT && dataJson.type !== TYPES.AGENT)) {
     log.err('invalid message type')
     return false
   }
@@ -54,21 +50,8 @@ module.exports.verifyDataJson = dataJson => {
   return true
 }
 
-module.exports.readInteger = function (name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
-  const rawValue = process.env[name]
-  if (rawValue === undefined || rawValue === '') return fallback
-
-  const value = Number(rawValue)
-  if (!Number.isInteger(value) || value < min || value > max) {
-    throw new Error(`${name} must be an integer between ${min} and ${max}`)
-  }
-
-  return value
-}
-
-module.exports.readPort = function (name, fallback) {
-  return module.exports.readInteger(name, fallback, { min: 1, max: 65535 })
-}
+module.exports.readInteger = readInteger
+module.exports.readPort = readPort
 
 if (!process.env.N_T_CRYPT_KEY) {
   console.log('WARNING: default CRYPT KEY is used!!!')
@@ -84,30 +67,22 @@ const cryptVersion = 1
 const ivLength = 12
 const authTagLength = 16
 
-let crypt = {
-  encrypt (str) {
+const crypt = {
+  encrypt(str) {
     try {
       const iv = crypto.randomBytes(ivLength)
       const cipher = crypto.createCipheriv(cryptAlg, cryptKey, iv, { authTagLength })
       cipher.setAAD(cryptContext)
 
-      const encrypted = Buffer.concat([
-        cipher.update(str, 'utf8'),
-        cipher.final()
-      ])
+      const encrypted = Buffer.concat([cipher.update(str, 'utf8'), cipher.final()])
 
-      return Buffer.concat([
-        Buffer.from([cryptVersion]),
-        iv,
-        cipher.getAuthTag(),
-        encrypted
-      ]).toString('base64')
+      return Buffer.concat([Buffer.from([cryptVersion]), iv, cipher.getAuthTag(), encrypted]).toString('base64')
     } catch (e) {
       log.err('ENC', e.message)
       return null
     }
   },
-  decrypt (str) {
+  decrypt(str) {
     try {
       const payload = Buffer.from(str, 'base64')
       const encryptedOffset = 1 + ivLength + authTagLength
@@ -122,10 +97,7 @@ let crypt = {
       decipher.setAAD(cryptContext)
       decipher.setAuthTag(authTag)
 
-      return Buffer.concat([
-        decipher.update(encrypted),
-        decipher.final()
-      ]).toString('utf8')
+      return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8')
     } catch (e) {
       log.err('DEC', e.message)
       return null
@@ -137,48 +109,49 @@ module.exports.crypt = crypt
 const messageDelimiter = 0x0a
 const maxMessageLength = 1024 * 1024
 
-module.exports.writeMessage = function (socket, message) {
+module.exports.writeMessage = (socket, message) => {
   if (!socket || socket.destroyed) return false
 
   const encrypted = crypt.encrypt(message)
   if (encrypted === null) return false
 
-  return socket.write(encrypted + '\n')
+  return socket.write(`${encrypted}\n`)
 }
 
-module.exports.createMessageDecoder = function (onMessage, onInvalid) {
+module.exports.createMessageDecoder = (onMessage, onInvalid) => {
   let pending = Buffer.alloc(0)
   let stopped = false
 
-  return function decodeMessages (data) {
+  return function decodeMessages(data) {
     if (stopped) return
     pending = Buffer.concat([pending, data])
 
-    let delimiterIndex
-    while ((delimiterIndex = pending.indexOf(messageDelimiter)) >= 0) {
+    let delimiterIndex = pending.indexOf(messageDelimiter)
+    while (delimiterIndex >= 0) {
       const encrypted = pending.subarray(0, delimiterIndex).toString('ascii')
       pending = pending.subarray(delimiterIndex + 1)
 
       const message = crypt.decrypt(encrypted)
       if (message === null) return invalid()
       onMessage(message)
+      delimiterIndex = pending.indexOf(messageDelimiter)
     }
 
     if (pending.length > maxMessageLength) invalid()
   }
 
-  function invalid () {
+  function invalid() {
     stopped = true
     pending = Buffer.alloc(0)
     if (onInvalid) onInvalid()
   }
 }
 
-module.exports.createFirstMessageDecoder = function (onMessage, onInvalid) {
+module.exports.createFirstMessageDecoder = (onMessage, onInvalid) => {
   let pending = Buffer.alloc(0)
   let completed = false
 
-  return function decodeFirstMessage (data) {
+  return function decodeFirstMessage(data) {
     if (completed) return
     pending = Buffer.concat([pending, data])
 
@@ -202,7 +175,7 @@ module.exports.createFirstMessageDecoder = function (onMessage, onInvalid) {
     onMessage(message, remainder)
   }
 
-  function invalid () {
+  function invalid() {
     completed = true
     pending = Buffer.alloc(0)
     if (onInvalid) onInvalid()

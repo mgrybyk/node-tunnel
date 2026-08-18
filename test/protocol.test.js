@@ -7,18 +7,14 @@ const { spawnSync } = require('node:child_process')
 
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
-const {
-  writeMessage,
-  createMessageDecoder,
-  createFirstMessageDecoder,
-  readPort
-} = require('../utils')
+const { writeMessage, createMessageDecoder, createFirstMessageDecoder, readPort } = require('../utils')
+const { getServerConfig } = require('../config')
 
 test('control decoder handles fragmented and coalesced frames', () => {
   const encoded = []
   const socket = {
     destroyed: false,
-    write (data) {
+    write(data) {
       encoded.push(Buffer.from(data))
       return true
     }
@@ -32,7 +28,9 @@ test('control decoder handles fragmented and coalesced frames', () => {
   let invalidMessages = 0
   const decode = createMessageDecoder(
     message => messages.push(message),
-    () => { invalidMessages++ }
+    () => {
+      invalidMessages++
+    }
   )
 
   decode(wireData.subarray(0, 3))
@@ -47,7 +45,7 @@ test('first-message decoder preserves coalesced raw tunnel bytes', () => {
   const encoded = []
   const socket = {
     destroyed: false,
-    write (data) {
+    write(data) {
       encoded.push(Buffer.from(data))
       return true
     }
@@ -56,9 +54,12 @@ test('first-message decoder preserves coalesced raw tunnel bytes', () => {
   let decoded
 
   writeMessage(socket, 'handshake')
-  const decode = createFirstMessageDecoder((message, remainder) => {
-    decoded = { message, remainder: Buffer.from(remainder) }
-  }, () => assert.fail('valid handshake was rejected'))
+  const decode = createFirstMessageDecoder(
+    (message, remainder) => {
+      decoded = { message, remainder: Buffer.from(remainder) }
+    },
+    () => assert.fail('valid handshake was rejected')
+  )
 
   decode(Buffer.concat([encoded[0], rawData]))
 
@@ -71,8 +72,12 @@ test('decoder stops after an invalid authenticated frame', () => {
   let invalidMessages = 0
   let decodedMessages = 0
   const decode = createMessageDecoder(
-    () => { decodedMessages++ },
-    () => { invalidMessages++ }
+    () => {
+      decodedMessages++
+    },
+    () => {
+      invalidMessages++
+    }
   )
 
   decode(invalidFrame)
@@ -86,6 +91,18 @@ test('port configuration rejects invalid values', () => {
   process.env.N_T_TEST_PORT = '70000'
   assert.throws(() => readPort('N_T_TEST_PORT', 1234), /between 1 and 65535/)
   delete process.env.N_T_TEST_PORT
+})
+
+test('server configuration rejects an overlapping control and data port', () => {
+  assert.throws(
+    () =>
+      getServerConfig({
+        N_T_SERVER_PORT: '3006',
+        N_T_SERVER_PORTS_FROM: '3005',
+        N_T_SERVER_PORTS_TO: '3009'
+      }),
+    /must not overlap/
+  )
 })
 
 test('runtime startup rejects a crypt key with the wrong byte length', () => {
