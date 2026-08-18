@@ -1,19 +1,19 @@
 'use strict'
 
-let dotEnvConfig = {}
-if (process.argv[2]) {
-  dotEnvConfig.path = process.argv[2] || '.env'
+const crypto = require('node:crypto')
+const { PROTOCOL_VERSION, TYPES } = require('./protocol')
+
+try {
+  process.loadEnvFile(process.argv[2] || '.env')
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error
 }
-require('dotenv').config(dotEnvConfig)
 
 const logDebug = process.env.N_T_LOG_DEBUG === 'true'
 const logError = process.env.N_T_LOG_ERROR === 'true'
 
-const types = {
-  AGENT: 'agent',
-  CLIENT: 'client'
-}
-module.exports.types = types
+module.exports.types = TYPES
+module.exports.protocolVersion = PROTOCOL_VERSION
 
 module.exports.removeElement = function (array, element) {
   let idx = array.indexOf(element)
@@ -40,13 +40,13 @@ module.exports.tryParseJSON = function (json, reviver) {
     return JSON.parse(json, reviver)
   } catch (error) {
     log.err('JSON', json)
-    return error
+    return null
   }
 }
 
 module.exports.verifyDataJson = dataJson => {
   if (!dataJson || typeof dataJson !== 'object' ||
-      (dataJson.type !== types.CLIENT && dataJson.type !== types.AGENT)) {
+      (dataJson.type !== TYPES.CLIENT && dataJson.type !== TYPES.AGENT)) {
     log.err('invalid message type')
     return false
   }
@@ -54,13 +54,31 @@ module.exports.verifyDataJson = dataJson => {
   return true
 }
 
+module.exports.readInteger = function (name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const rawValue = process.env[name]
+  if (rawValue === undefined || rawValue === '') return fallback
+
+  const value = Number(rawValue)
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}`)
+  }
+
+  return value
+}
+
+module.exports.readPort = function (name, fallback) {
+  return module.exports.readInteger(name, fallback, { min: 1, max: 65535 })
+}
+
 if (!process.env.N_T_CRYPT_KEY) {
   console.log('WARNING: default CRYPT KEY is used!!!')
 }
 
-const crypto = require('crypto')
-const cryptKey = Buffer.from((process.env.N_T_CRYPT_KEY || 'b70231120900saamkb83gsc150f162fd').slice(0, 32))
-const cryptContext = Buffer.from(process.env.N_T_CRYPT_IV || 'e7c3df588cc0')
+const cryptKey = Buffer.from(process.env.N_T_CRYPT_KEY || 'b70231120900saamkb83gsc150f162fd')
+if (cryptKey.length !== 32) {
+  throw new Error('N_T_CRYPT_KEY must contain exactly 32 UTF-8 bytes')
+}
+const cryptContext = Buffer.from('node-tunnel-control')
 const cryptAlg = 'chacha20-poly1305'
 const cryptVersion = 1
 const ivLength = 12

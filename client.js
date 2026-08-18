@@ -1,15 +1,18 @@
 'use strict'
 
-const net = require('net')
+const net = require('node:net')
+const { randomUUID } = require('node:crypto')
+const { PROTOCOL_VERSION, ERRORS } = require('./protocol')
 const {
   tryParseJSON,
   log,
   removeElement,
   writeMessage,
   createMessageDecoder,
-  createFirstMessageDecoder
+  createFirstMessageDecoder,
+  readInteger,
+  readPort
 } = require('./utils')
-const { v4: uuid } = require('uuid')
 
 const clientName = process.env.N_T_CLIENT_NAME || 'dbg'
 
@@ -18,15 +21,20 @@ if (clientName.length > 128) {
   process.exit(1)
 }
 const serverHost = process.env.N_T_SERVER_HOST || 'localhost'
-const serverPort = parseInt(process.env.N_T_SERVER_PORT) || 1337
-const localPort = parseInt(process.env.N_T_CLIENT_PORT) || 8000
+const serverPort = readPort('N_T_SERVER_PORT', 1337)
+const localPort = readPort('N_T_CLIENT_PORT', 8000)
+const reconnectDelay = readInteger('N_T_RECONNECT_DELAY_MS', 5_000, { min: 100, max: 300_000 })
+const handshakeTimeout = readInteger('N_T_HANDSHAKE_TIMEOUT_MS', 10_000, { min: 100, max: 300_000 })
 
 let connectionToServerLost = false
+let fatalError = false
 let localConnections = []
 let dataConnections = []
 
-let serviceClient = new net.Socket()
+let serviceClient
 let isDataClient = false
+let reconnectTimer
+let pinger
 
 let dataJson
 
@@ -40,13 +48,24 @@ let localServer = net.createServer({ pauseOnConnect: true, allowHalfOpen: true }
 
   localConnections.push(localSocket)
   let dataClient = new net.Socket({ allowHalfOpen: true })
-  dataClient.uuid = 'client-' + uuid()
+  dataClient.uuid = 'client-' + randomUUID()
   dataConnections.push(dataClient)
+  dataClient.setTimeout(handshakeTimeout, () => dataClient.destroy())
   dataClient.on('connect', () => {
-    writeMessage(dataClient, `{ "type": "client", "uuid": "${dataClient.uuid}" }`)
+    writeMessage(dataClient, JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'client',
+      uuid: dataClient.uuid
+    }))
   })
   const decodeReady = createFirstMessageDecoder((message, remainder) => {
+    const readyMessage = tryParseJSON(message)
+    if (!readyMessage || readyMessage.protocolVersion !== PROTOCOL_VERSION || !readyMessage.ready) {
+      return dataClient.destroy()
+    }
+
     dataClient.removeListener('data', decodeReady)
+    dataClient.setTimeout(0)
     dataClient
       .pipe(localSocket)
       .pipe(dataClient)
@@ -91,9 +110,15 @@ localServer.on('error', err => {
   process.exit(1)
 })
 
-const decodeServiceMessage = createMessageDecoder(data => {
+function onServiceMessage (socket, data) {
   let tmpJson = tryParseJSON(data)
-  if (!tmpJson || typeof tmpJson !== 'object') return serviceClient.destroy()
+  if (!tmpJson || typeof tmpJson !== 'object') return socket.destroy()
+  if (tmpJson.protocolVersion !== PROTOCOL_VERSION) {
+    return stopFatal(
+      `${ERRORS.VERSION_MISMATCH}: client=${PROTOCOL_VERSION}, server=${tmpJson.protocolVersion ?? 'unknown'}`
+    )
+  }
+  if (tmpJson.error) return stopFatal(tmpJson.error)
   if (tmpJson.pong) return
   if (tmpJson.agentDied || !tmpJson.port) {
     dataJson = null
@@ -104,42 +129,68 @@ const decodeServiceMessage = createMessageDecoder(data => {
   if (dataJson.port === null) return
   log.info('Agent found, ready!')
   isDataClient = true
-}, () => serviceClient.destroy())
-serviceClient.on('data', decodeServiceMessage)
-
-let pinger
-serviceClient.on('connect', () => {
-  log.info('Connection to server established, waiting for agent.')
-  let msg = { type: 'client', name: clientName }
-  if (dataJson && dataJson.uuid) msg.uuid = dataJson.uuid
-  writeMessage(serviceClient, JSON.stringify(msg))
-  pinger = setInterval(() => {
-    writeMessage(serviceClient, '' + Math.random())
-  }, 15000)
-  if (dataJson) isDataClient = true
-})
-
-serviceClient.on('error', err => log.err('SERVICE_SOCKET', err.name || err.code, err.message))
-
-serviceClient.on('close', hadError => {
-  if (!connectionToServerLost) {
-    connectionToServerLost = true
-    log.info('Connection to server lost')
-  }
-  if (pinger) clearInterval(pinger)
-  if (!serviceClient.destroyed) serviceClient.destroy()
-  isDataClient = false
-  connectWithDelay(5000)
-})
+}
 
 function connect () {
-  serviceClient.connect(serverPort, serverHost)
+  if (fatalError) return
+
+  const socket = new net.Socket()
+  const decodeServiceMessage = createMessageDecoder(
+    data => onServiceMessage(socket, data),
+    () => socket.destroy()
+  )
+  serviceClient = socket
+
+  socket.on('data', decodeServiceMessage)
+  socket.on('connect', () => {
+    connectionToServerLost = false
+    log.info('Connection to server established, waiting for agent.')
+    let msg = { protocolVersion: PROTOCOL_VERSION, type: 'client', name: clientName }
+    if (dataJson && dataJson.uuid) msg.uuid = dataJson.uuid
+    writeMessage(socket, JSON.stringify(msg))
+    if (pinger) clearInterval(pinger)
+    pinger = setInterval(() => {
+      writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ping: Math.random() }))
+    }, 15000)
+    if (dataJson) isDataClient = true
+  })
+  socket.on('error', err => log.err('SERVICE_SOCKET', err.name || err.code, err.message))
+  socket.on('close', () => {
+    socket.removeListener('data', decodeServiceMessage)
+    if (socket !== serviceClient) return
+
+    if (!connectionToServerLost) {
+      connectionToServerLost = true
+      log.info('Connection to server lost')
+    }
+    if (pinger) clearInterval(pinger)
+    pinger = undefined
+    isDataClient = false
+    if (!fatalError) connectWithDelay(reconnectDelay)
+  })
+
+  socket.connect(serverPort, serverHost)
 }
 
 function connectWithDelay (delay) {
+  if (fatalError) return
+  if (reconnectTimer) clearTimeout(reconnectTimer)
   if (!delay) return connect()
 
-  setTimeout(connect, delay)
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined
+    connect()
+  }, delay)
+}
+
+function stopFatal (message) {
+  if (fatalError) return
+  fatalError = true
+  log.info(message)
+  if (reconnectTimer) clearTimeout(reconnectTimer)
+  if (pinger) clearInterval(pinger)
+  if (serviceClient && !serviceClient.destroyed) serviceClient.destroy()
+  setImmediate(() => process.exit(1))
 }
 
 connectWithDelay(500)
@@ -158,10 +209,16 @@ process.on('exit', (code) => {
       dataConnection.destroy()
     }
   })
-  serviceClient.end()
-  serviceClient.destroy()
+  if (serviceClient) {
+    serviceClient.end()
+    serviceClient.destroy()
+  }
 })
 
 process.on('SIGINT', () => {
+  process.exit()
+})
+
+process.on('SIGTERM', () => {
   process.exit()
 })

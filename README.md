@@ -8,7 +8,7 @@ Allows you to open to forward any custom port (rdp, ssh, proxies, whatever) from
 
 1. have Node.js 24 LTS or newer and npm
 2. clone repo
-3. npm i
+3. npm ci
 
 **WARN: data is NOT encrypted at the moment, except service messages!**
 
@@ -18,12 +18,16 @@ Run the automated unit and end-to-end suite with:
 
 ```sh
 npm test
+npm run test:coverage
 ```
 
 The end-to-end test starts the real server, two agents, and six clients on
 loopback ports. It runs 72 tunnel connections across three traffic waves, with
 24 connections active in parallel per wave, and verifies binary responses byte
 for byte. No external services are required.
+
+Coverage includes the spawned server, agent, and client processes and enforces
+minimum statement, line, function, and branch thresholds.
 
 
 ### server
@@ -91,12 +95,26 @@ If you still want/need it - feel free.*
 ### set service messages crypt key (not data!)
 
 ```
-# 12 symbols
-N_T_CRYPT_IV=vma4o5q8t439
-# 32 symbols
+# exactly 32 UTF-8 bytes
 N_T_CRYPT_KEY=:AKJSF-238fh;LASJFBH:3rf0=;hn:EW
 ```
-N_T_CRYPT_KEY / N_T_CRYPT_IV should be the same for server, all agents and clients.
+
+`N_T_CRYPT_KEY` must be the same for the server, all agents, and all clients.
+Message nonces are generated automatically; there is no IV setting.
+
+### protocol compatibility
+
+The server, agents, and clients must use the same protocol version. A mismatched
+new client or agent logs the version error and exits. Legacy unframed peers are
+closed after the handshake timeout and cannot connect to this release.
+
+Optional reliability settings are:
+
+```sh
+N_T_RECONNECT_DELAY_MS=5000
+N_T_HANDSHAKE_TIMEOUT_MS=10000
+N_T_CONTROL_IDLE_TIMEOUT_MS=45000
+```
 
 
 ### one more img example :)
@@ -123,4 +141,8 @@ If you still want/need it - feel free.*
 
 **Q**: I have multiple messages on client/agent side "Connection to server established."
 
-**A**: You have to set same *N_T_CRYPT_KEY* (IV/ALG) for server and all agents/clients.
+**A**: Ensure every process uses the same `N_T_CRYPT_KEY` and protocol version.
+
+## security
+
+The remaining known security limitations are tracked in [SECURITY.md](SECURITY.md).

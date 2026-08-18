@@ -1,7 +1,8 @@
 'use strict'
 
-const net = require('net')
-const { v4: uuid } = require('uuid')
+const net = require('node:net')
+const { randomUUID } = require('node:crypto')
+const { PROTOCOL_VERSION, ERRORS } = require('./protocol')
 const {
   tryParseJSON,
   log,
@@ -10,29 +11,46 @@ const {
   removeElement,
   writeMessage,
   createMessageDecoder,
-  createFirstMessageDecoder
+  createFirstMessageDecoder,
+  readInteger,
+  readPort
 } = require('./utils')
 const { CLIENT, AGENT } = types
 
-let portsFrom = parseInt(process.env.N_T_SERVER_PORTS_FROM) || 3005
-let portsTo = parseInt(process.env.N_T_SERVER_PORTS_TO) || 3009
+let portsFrom = readPort('N_T_SERVER_PORTS_FROM', 3005)
+let portsTo = readPort('N_T_SERVER_PORTS_TO', 3009)
+if (portsTo < portsFrom) {
+  throw new Error('N_T_SERVER_PORTS_TO must be greater than or equal to N_T_SERVER_PORTS_FROM')
+}
 let ports = Array(1 + portsTo - portsFrom).fill().map((e, i) => i + portsFrom)
-const serviceServerPort = parseInt(process.env.N_T_SERVER_PORT) || 1337
+const serviceServerPort = readPort('N_T_SERVER_PORT', 1337)
+const handshakeTimeout = readInteger('N_T_HANDSHAKE_TIMEOUT_MS', 10_000, { min: 100, max: 300_000 })
+const controlIdleTimeout = readInteger('N_T_CONTROL_IDLE_TIMEOUT_MS', 45_000, { min: 1_000, max: 3_600_000 })
 
-let connections = {}
-let pipes = {}
+let connections = Object.create(null)
+let pipes = Object.create(null)
 
 let serviceServer = net.createServer(serviceSocket => {
+  serviceSocket.setTimeout(handshakeTimeout, () => serviceSocket.destroy())
+
   function onMessage (data) {
     // known agent or client, sending pong
     if (serviceSocket.cProps && serviceSocket.cProps.uuid) {
-      return writeMessage(serviceSocket, `{"pong":${Math.random()}}`)
+      return sendJson(serviceSocket, { pong: Math.random() })
     }
 
     // parse json and validate its structure
     let dataJson = tryParseJSON(data)
     log.debug(dataJson)
 
+    if (!dataJson || typeof dataJson !== 'object') return serviceSocket.destroy()
+    if (dataJson.protocolVersion !== PROTOCOL_VERSION) {
+      sendJson(serviceSocket, {
+        error: ERRORS.VERSION_MISMATCH,
+        receivedProtocolVersion: dataJson.protocolVersion ?? null
+      })
+      return serviceSocket.end()
+    }
     if (!verifyDataJson(dataJson) || !dataJson.name) return serviceSocket.destroy()
 
     // build connections for agent/client
@@ -43,7 +61,7 @@ let serviceServer = net.createServer(serviceSocket => {
       connections[dataJson.name][dataJson.type] = {}
     }
     if (!dataJson.uuid) {
-      dataJson.uuid = uuid()
+      dataJson.uuid = randomUUID()
     }
 
     // handle case if agent or client has reconnected
@@ -56,13 +74,14 @@ let serviceServer = net.createServer(serviceSocket => {
       connections[dataJson.name][dataJson.type][dataJson.uuid].socket = serviceSocket
       delete deadSocket.cProps
       deadSocket.destroy()
+      serviceSocket.setTimeout(controlIdleTimeout)
       return
     }
 
     // kill agent with the same name
     if (dataJson.type === AGENT && Object.keys(connections[dataJson.name][AGENT]).length > 0) {
-      writeMessage(serviceSocket, '{ "error": "agent with this name already exist" }')
-      return serviceSocket.destroy()
+      sendJson(serviceSocket, { error: ERRORS.DUPLICATE_AGENT })
+      return serviceSocket.end()
     }
 
     // set connection props. It might be awful idea modify socket object
@@ -71,6 +90,7 @@ let serviceServer = net.createServer(serviceSocket => {
       uuid: dataJson.uuid,
       type: dataJson.type
     }
+    serviceSocket.setTimeout(controlIdleTimeout)
 
     // proceeding to build connections for agent/client
     if (!connections[dataJson.name][dataJson.type][dataJson.uuid]) {
@@ -99,7 +119,12 @@ let serviceServer = net.createServer(serviceSocket => {
 
         // get first available port for agent
         agentObj.port = ports.shift()
-        if (!agentObj.port) { return serviceSocket.destroy() } // todo notify agent that there are no free ports
+        if (!agentObj.port) {
+          sendJson(serviceSocket, { error: ERRORS.NO_PORTS })
+          delete connections[dataJson.name][AGENT][dataJson.uuid]
+          delete serviceSocket.cProps
+          return serviceSocket.end()
+        }
 
         // create dedicated server for agent
         createServer(dataJson.name, dataJson.uuid)
@@ -126,53 +151,51 @@ let serviceServer = net.createServer(serviceSocket => {
     if (!cProps) return log.debug('unknown connection closed')
 
     if (cProps.type === AGENT) {
+      const connectionGroup = connections[cProps.name]
+      const agentObj = connectionGroup && connectionGroup[AGENT] && connectionGroup[AGENT][cProps.uuid]
+      if (!agentObj || agentObj.socket !== serviceSocket) return
+
       // notify clients that agent went offline
-      if (connections[cProps.name][CLIENT]) {
-        Object.keys(connections[cProps.name][CLIENT]).forEach(clientUuid => {
-          writeMessage(connections[cProps.name][CLIENT][clientUuid].socket, '{"agentDied": true}')
-          connections[cProps.name][CLIENT][clientUuid].socket.destroy()
+      if (connectionGroup[CLIENT]) {
+        Object.keys(connectionGroup[CLIENT]).forEach(clientUuid => {
+          const clientSocket = connectionGroup[CLIENT][clientUuid].socket
+          sendJson(clientSocket, { agentDied: true })
+          clientSocket.end()
         })
       }
 
-      pipes[cProps.name].server.maxConnections = 0
+      const pipeObj = pipes[cProps.name]
+      const portToRelease = agentObj.port
+
+      delete connectionGroup[AGENT][cProps.uuid]
+      if (Object.keys(connectionGroup[AGENT]).length === 0) delete connectionGroup[AGENT]
+      if (pipes[cProps.name] === pipeObj) delete pipes[cProps.name]
 
       // kill all dedicated server sockets
-      if (pipes[cProps.name].pipes) {
-        Object.keys(pipes[cProps.name].pipes).forEach(pipeUuid => {
-          if (pipes[cProps.name].pipes[pipeUuid].socket) {
-            pipes[cProps.name].pipes[pipeUuid].socket.unpipe()
-            pipes[cProps.name].pipes[pipeUuid].socket.destroy()
+      if (pipeObj && pipeObj.pipes) {
+        Object.keys(pipeObj.pipes).forEach(pipeUuid => {
+          if (pipeObj.pipes[pipeUuid].socket) {
+            pipeObj.pipes[pipeUuid].socket.unpipe()
+            pipeObj.pipes[pipeUuid].socket.destroy()
           }
         })
       }
 
-      // stop server
-      let serverDead = false
-      let portToRelease = connections[cProps.name][AGENT][cProps.uuid].port
-      pipes[cProps.name].server.close(someArg => {
-        // add port that is no longer in use
-        ports.push(portToRelease)
-
+      if (pipeObj && pipeObj.server) {
+        pipeObj.server.close(() => {
+          releasePort(portToRelease)
+          log.info(cProps.type, cProps.name, 'went offline and released port', portToRelease)
+        })
+        pipeObj.server.closeAllConnections()
+      } else {
+        releasePort(portToRelease)
         log.info(cProps.type, cProps.name, 'went offline and release port', portToRelease)
-
-        // delete agent from connections
-        serverDead = true
-        setTimeout(() => {
-          delete pipes[cProps.name]
-          delete connections[cProps.name][AGENT]
-        }, 5000)
-      })
-      // sometimes server not stopping
-      // but we need to live at least somehow
-      setTimeout(() => {
-        if (!serverDead) {
-          delete pipes[cProps.name]
-          delete connections[cProps.name][AGENT]
-        }
-      }, 40000)
+      }
     } else if (cProps.type === CLIENT) {
       log.info(`${cProps.type} "${cProps.name}" went offline.`)
-      delete connections[cProps.name][CLIENT][cProps.uuid]
+      const clientGroup = connections[cProps.name] && connections[cProps.name][CLIENT]
+      const clientObj = clientGroup && clientGroup[cProps.uuid]
+      if (clientObj && clientObj.socket === serviceSocket) delete clientGroup[cProps.uuid]
     }
   })
 })
@@ -193,6 +216,8 @@ function createServer (connectionName, serviceAgentUuid) {
   const dataServerPort = connections[connectionName][AGENT][serviceAgentUuid].port
 
   pipes[connectionName].server = net.createServer({ allowHalfOpen: true }, socket => {
+    socket.setTimeout(handshakeTimeout, () => socket.destroy())
+
     const decodeHandshake = createFirstMessageDecoder((data, remainder) => {
       socket.removeListener('data', decodeHandshake)
       socket.pause()
@@ -201,8 +226,10 @@ function createServer (connectionName, serviceAgentUuid) {
       let dataJson = tryParseJSON(data)
       log.debug(dataJson)
 
+      if (!dataJson || dataJson.protocolVersion !== PROTOCOL_VERSION) return socket.end()
       if (!verifyDataJson(dataJson) || !dataJson.uuid) return socket.end()
 
+      socket.setTimeout(0)
       socket.uuid = dataJson.uuid
       socket.initialData = remainder.length > 0 ? Buffer.from(remainder) : null
       conPipes[socket.uuid] = { type: dataJson.type }
@@ -222,7 +249,10 @@ function createServer (connectionName, serviceAgentUuid) {
             clientSockets.push(socket)
             // notify agent that there is a client
             log.debug('SENDING NOTIFICATION TO AGENT')
-            writeMessage(connections[connectionName][AGENT][serviceAgentUuid].socket, '{"data":true}')
+            const agentObj = connections[connectionName] &&
+              connections[connectionName][AGENT] &&
+              connections[connectionName][AGENT][serviceAgentUuid]
+            if (!agentObj || !sendJson(agentObj.socket, { data: true })) socket.destroy()
           }
         }
     }, () => socket.destroy())
@@ -271,7 +301,7 @@ function createServer (connectionName, serviceAgentUuid) {
     clientSocket.pipe(agentSocket)
 
     // Tell the client that subsequent bytes are tunneled application data.
-    writeMessage(clientSocket, '' + Math.random())
+    sendJson(clientSocket, { ready: true })
 
     if (agentSocket.initialData) clientSocket.write(agentSocket.initialData)
     if (clientSocket.initialData) agentSocket.write(clientSocket.initialData)
@@ -286,12 +316,25 @@ function createServer (connectionName, serviceAgentUuid) {
   pipes[connectionName].server.on('listening', listener => log.info(`Agent "${connectionName}" connected, dedicated port ${dataServerPort}`))
   pipes[connectionName].server.on('error', err => {
     log.info('Something went wrong with agent server. Killing agent...\n', err.name || err.code, err.message)
-    connections[connectionName][AGENT][serviceAgentUuid].socket.destroy()
+    const agentObj = connections[connectionName] &&
+      connections[connectionName][AGENT] &&
+      connections[connectionName][AGENT][serviceAgentUuid]
+    if (agentObj && agentObj.socket) agentObj.socket.destroy()
   })
 }
 
 function notify (socket, port, uuid) {
-  return writeMessage(socket, `{"port":${port},"uuid":"${uuid}"}`)
+  return sendJson(socket, { port, uuid })
+}
+
+function sendJson (socket, data) {
+  return writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...data }))
+}
+
+function releasePort (port) {
+  if (!port || ports.includes(port)) return
+  ports.push(port)
+  ports.sort((a, b) => a - b)
 }
 
 // try kill sockets before exit
@@ -310,20 +353,20 @@ process.on('exit', (code) => {
       })
     }
     if (connections[name]) {
-      if (connections[name].AGENT) {
+      if (connections[name][AGENT]) {
         // service agents
-        Object.keys(connections[name].AGENT).forEach(agentUuid => {
-          let agentObj = connections[name].AGENT[agentUuid]
+        Object.keys(connections[name][AGENT]).forEach(agentUuid => {
+          let agentObj = connections[name][AGENT][agentUuid]
           if (agentObj && agentObj.socket && !agentObj.socket.destroyed) {
             agentObj.socket.destroy()
             connectionsKilled++
           }
         })
       }
-      if (connections[name].CLIENT) {
+      if (connections[name][CLIENT]) {
         // service clients
-        Object.keys(connections[name].CLIENT).forEach(clientUuid => {
-          let clientObj = connections[name].CLIENT[clientUuid]
+        Object.keys(connections[name][CLIENT]).forEach(clientUuid => {
+          let clientObj = connections[name][CLIENT][clientUuid]
           if (clientObj && clientObj.socket && !clientObj.socket.destroyed) {
             clientObj.socket.destroy()
             connectionsKilled++
@@ -337,5 +380,9 @@ process.on('exit', (code) => {
 })
 
 process.on('SIGINT', () => {
+  process.exit()
+})
+
+process.on('SIGTERM', () => {
   process.exit()
 })

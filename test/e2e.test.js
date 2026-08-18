@@ -10,7 +10,6 @@ const { spawn } = require('node:child_process')
 const projectRoot = path.resolve(__dirname, '..')
 const host = '127.0.0.1'
 const cryptKey = '0123456789abcdef0123456789abcdef'
-const cryptIv = '0123456789ab'
 const startupTimeout = 15_000
 const streamTimeout = 30_000
 const testTimeout = 120_000
@@ -37,7 +36,6 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
     const ports = await reserveTopologyPorts(agentsCount, agentsCount * clientsPerAgent)
     const commonEnv = {
       N_T_CRYPT_KEY: cryptKey,
-      N_T_CRYPT_IV: cryptIv,
       N_T_LOG_DEBUG: 'false',
       N_T_LOG_ERROR: 'true',
       N_T_SERVER_HOST: host,
