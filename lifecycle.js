@@ -1,5 +1,11 @@
 'use strict'
 
+const TCP_KEEP_ALIVE_INITIAL_DELAY = 30_000
+
+function enableSocketKeepAlive(socket) {
+  socket.setKeepAlive(true, TCP_KEEP_ALIVE_INITIAL_DELAY)
+}
+
 function createBackoff({ baseDelay, maxDelay, jitterPercent = 20, random = Math.random }) {
   let attempt = 0
 
@@ -103,6 +109,8 @@ function runCli(createApplication) {
 }
 
 module.exports = {
+  TCP_KEEP_ALIVE_INITIAL_DELAY,
+  enableSocketKeepAlive,
   createBackoff,
   stopListening,
   destroySockets,

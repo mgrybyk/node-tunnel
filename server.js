@@ -18,7 +18,7 @@ const {
   createMessageDecoder,
   createFirstMessageDecoder
 } = require('./utils')
-const { stopListening, destroySockets, waitForSockets, runCli } = require('./lifecycle')
+const { enableSocketKeepAlive, stopListening, destroySockets, waitForSockets, runCli } = require('./lifecycle')
 const { CLIENT, AGENT } = types
 
 function createServer(config = getServerConfig()) {
@@ -71,6 +71,7 @@ function createServer(config = getServerConfig()) {
   function handleServiceSocket(serviceSocket) {
     if (closing) return serviceSocket.destroy()
 
+    enableSocketKeepAlive(serviceSocket)
     serviceSockets.add(serviceSocket)
     serviceSocket.setTimeout(config.handshakeTimeout, () => serviceSocket.destroy())
 
@@ -218,6 +219,7 @@ function createServer(config = getServerConfig()) {
     const dataServer = net.createServer({ allowHalfOpen: true }, socket => {
       if (closing) return socket.destroy()
 
+      enableSocketKeepAlive(socket)
       dataSockets.add(socket)
       socket.setTimeout(config.handshakeTimeout, () => socket.destroy())
 
@@ -232,7 +234,6 @@ function createServer(config = getServerConfig()) {
           if (!dataJson || dataJson.protocolVersion !== PROTOCOL_VERSION) return socket.end()
           if (!verifyDataJson(dataJson) || !dataJson.uuid) return socket.end()
 
-          socket.setTimeout(0)
           socket.uuid = dataJson.uuid
           socket.initialData = remainder.length > 0 ? Buffer.from(remainder) : null
           conPipes[socket.uuid] = { type: dataJson.type }
@@ -380,6 +381,9 @@ function pairSockets(agentSocket, clientSocket, conPipes) {
   log.debug('creating pipe')
   conPipes[agentSocket.uuid].socket = clientSocket
   conPipes[clientSocket.uuid].socket = agentSocket
+
+  agentSocket.setTimeout(0)
+  clientSocket.setTimeout(0)
 
   agentSocket.pipe(clientSocket)
   clientSocket.pipe(agentSocket)

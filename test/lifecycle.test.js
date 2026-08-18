@@ -3,6 +3,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const net = require('node:net')
+const { setTimeout: delay } = require('node:timers/promises')
 
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 process.env.N_T_LOG_ERROR = 'true'
@@ -10,7 +11,7 @@ process.env.N_T_LOG_ERROR = 'true'
 const { createServer } = require('../server')
 const { createAgent } = require('../agent')
 const { createClient } = require('../client')
-const { createBackoff } = require('../lifecycle')
+const { TCP_KEEP_ALIVE_INITIAL_DELAY, enableSocketKeepAlive, createBackoff } = require('../lifecycle')
 const { PROTOCOL_VERSION } = require('../protocol')
 const { writeMessage, createMessageDecoder, log } = require('../utils')
 const {
@@ -45,6 +46,20 @@ test('reconnect backoff grows to its cap and can be reset', () => {
   const upperBound = createBackoff({ baseDelay: 100, maxDelay: 400, jitterPercent: 20, random: () => 1 })
   assert.equal(lowerBound.next(), 80)
   assert.equal(upperBound.next(), 120)
+})
+
+test('TCP keepalive uses a short initial idle delay', () => {
+  const calls = []
+  const socket = {
+    setKeepAlive(enabled, initialDelay) {
+      calls.push({ enabled, initialDelay })
+    }
+  }
+
+  enableSocketKeepAlive(socket)
+
+  assert.deepEqual(calls, [{ enabled: true, initialDelay: 30_000 }])
+  assert.equal(TCP_KEEP_ALIVE_INITIAL_DELAY, 30_000)
 })
 
 test('server and client reject occupied listener ports without leaking handles', async t => {
@@ -183,6 +198,61 @@ test('shutdown deadline force-closes a stream that does not drain', { timeout: 1
   assert.equal(client.getState().localConnections, 0)
 })
 
+test('a paired stream remains open beyond the handshake timeout', { timeout: 10_000 }, async t => {
+  silenceInfoLogs(t)
+  let receivedResolve
+  const received = new Promise(resolve => {
+    receivedResolve = resolve
+  })
+  const backend = createHoldingServer(receivedResolve)
+  await listen(backend)
+
+  const ports = await reserveTopologyPorts(1, 1)
+  const handshakeTimeout = 100
+  const server = createServer({ ...serverConfig(ports), handshakeTimeout })
+  const agent = createAgent(
+    peerConfig(ports, {
+      name: 'long-lived-stream',
+      targetHost: host,
+      targetPort: backend.address().port,
+      handshakeTimeout
+    })
+  )
+  const client = createClient(
+    peerConfig(ports, {
+      name: 'long-lived-stream',
+      localPort: ports.clients[0],
+      handshakeTimeout
+    })
+  )
+  let localSocket
+
+  t.after(async () => {
+    localSocket?.destroy()
+    await Promise.all([client.close({ force: true }), agent.close({ force: true }), server.close({ force: true })])
+    await closeServer(backend)
+  })
+
+  await server.start()
+  await agent.start()
+  await client.start()
+  await waitForCondition(() => client.getState().ready)
+  localSocket = net.createConnection({ host, port: ports.clients[0] })
+  localSocket.on('error', () => {})
+  await new Promise((resolve, reject) => {
+    localSocket.once('connect', resolve)
+    localSocket.once('error', reject)
+  })
+  localSocket.write('keep this stream open')
+  await received
+  await delay(3 * handshakeTimeout)
+
+  assert.equal(localSocket.destroyed, false)
+  assert.equal(server.getState().dataSockets, 2)
+  assert.equal(agent.getState().dataConnections, 1)
+  assert.equal(client.getState().dataConnections, 1)
+})
+
 test('server removes empty connection-name state after client churn', { timeout: 10_000 }, async t => {
   silenceInfoLogs(t)
   const ports = await reserveTopologyPorts(1, 0)
@@ -221,6 +291,38 @@ test('server repeatedly releases and reuses an agent data port', { timeout: 15_0
 
   assert.deepEqual(fatalErrors, [])
   assert.deepEqual(server.getState().availablePorts, [ports.dataFrom])
+})
+
+test('server expires a valid data socket that waits too long for its peer', { timeout: 5_000 }, async t => {
+  silenceInfoLogs(t)
+  const ports = await reserveTopologyPorts(1, 0)
+  const server = createServer({ ...serverConfig(ports), handshakeTimeout: 250 })
+  let agent
+  let dataSocket
+
+  t.after(async () => {
+    dataSocket?.destroy()
+    agent?.socket.destroy()
+    await server.close({ force: true })
+  })
+
+  await server.start()
+  agent = await registerAgent(ports.service, 'unmatched-data-socket')
+  dataSocket = net.createConnection({ host, port: agent.assignedPort })
+  dataSocket.on('error', () => {})
+  await new Promise((resolve, reject) => {
+    dataSocket.once('connect', resolve)
+    dataSocket.once('error', reject)
+  })
+  writeMessage(
+    dataSocket,
+    JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'client', uuid: 'client-without-peer' })
+  )
+
+  await waitForCondition(() => server.getState().dataSockets === 1)
+  await waitForSocketClose(dataSocket, 2_000)
+  await waitForCondition(() => server.getState().dataSockets === 0)
+  assert.equal(server.getState().serviceSockets, 1)
 })
 
 function serverConfig(ports) {
@@ -356,6 +458,44 @@ function registerAgentAndDisconnect(port, name) {
       socket.destroy()
       if (error) reject(error)
       else resolve(result)
+    }
+  })
+}
+
+function registerAgent(port, name) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const socket = net.createConnection({ host, port })
+    const timer = setTimeout(() => finish(new Error('agent registration timed out')), 3_000)
+    const decode = createMessageDecoder(
+      message => {
+        try {
+          const response = JSON.parse(message)
+          if (response.port) finish(null, { socket, assignedPort: response.port })
+        } catch (error) {
+          finish(error)
+        }
+      },
+      () => finish(new Error('agent registration returned an invalid frame'))
+    )
+
+    socket.on('connect', () => {
+      writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'agent', name }))
+    })
+    socket.on('data', decode)
+    socket.on('error', finish)
+    socket.on('close', () => finish(new Error('agent disconnected before receiving a data port')))
+
+    function finish(error, result) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (error) {
+        socket.destroy()
+        reject(error)
+      } else {
+        resolve(result)
+      }
     }
   })
 }

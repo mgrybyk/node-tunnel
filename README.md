@@ -70,7 +70,9 @@ N_T_AGENT_NAME=test-ssh
 N_T_AGENT_DATA_HOST=some-machine
 N_T_AGENT_DATA_PORT=22
 ```
-It is better to use long client/agent names for security reasons!
+Agent names select routes; they are not separate security credentials. Access
+is controlled by the shared `N_T_CRYPT_KEY`, so every peer using that key must
+be trusted to access every configured target.
 
 ### client
 
@@ -129,6 +131,9 @@ N_T_SHUTDOWN_TIMEOUT_MS=5000
 
 Reconnect delays use exponential backoff capped by
 `N_T_RECONNECT_MAX_DELAY_MS`; jitter reduces synchronized reconnect storms.
+Every established control and tunnel socket enables kernel TCP keepalive after
+30 seconds of inactivity. Further probe timing and failure detection are
+controlled by the operating system.
 On `SIGINT` or `SIGTERM`, each process stops accepting new work and gives active
 streams up to `N_T_SHUTDOWN_TIMEOUT_MS` to finish before forcing them closed.
 

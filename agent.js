@@ -9,7 +9,7 @@ if (require.main === module) loadEnvironment(process.argv[2])
 
 const { PROTOCOL_VERSION, ERRORS } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createMessageDecoder } = require('./utils')
-const { createBackoff, destroySockets, waitForSockets, runCli } = require('./lifecycle')
+const { enableSocketKeepAlive, createBackoff, destroySockets, waitForSockets, runCli } = require('./lifecycle')
 
 function createAgent(config = getAgentConfig()) {
   const events = new EventEmitter()
@@ -93,6 +93,7 @@ function createAgent(config = getAgentConfig()) {
     })
     dataAgent.on('connect', () => {
       if (stopping) return dataAgent.destroy()
+      enableSocketKeepAlive(dataAgent)
 
       localSocket = new net.Socket({ allowHalfOpen: true })
       localConnections.add(localSocket)
@@ -100,6 +101,7 @@ function createAgent(config = getAgentConfig()) {
       localSocket.on('error', error => log.err('LOCAL_SOCKET', error.name || error.code, error.message))
       localSocket.on('connect', () => {
         if (dataAgent.destroyed || stopping) return localSocket.destroy()
+        enableSocketKeepAlive(localSocket)
 
         dataAgent.setTimeout(0)
         localSocket.setTimeout(0)
@@ -143,6 +145,7 @@ function createAgent(config = getAgentConfig()) {
 
     socket.on('data', decodeServiceMessage)
     socket.on('connect', () => {
+      enableSocketKeepAlive(socket)
       connectionToServerLost = false
       log.info('Connection to server established.')
       const message = { protocolVersion: PROTOCOL_VERSION, type: 'agent', name: config.name }

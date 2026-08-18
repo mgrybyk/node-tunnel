@@ -126,15 +126,24 @@ half-closed request streams.
   only.
 - The README warning is literal: tunneled application payloads are plaintext
   between agent/client and the public server.
+- Plaintext payload forwarding is an accepted performance tradeoff. Do not add
+  reversible byte masking; use an end-to-end encrypted application protocol
+  such as SSH or HTTPS when confidentiality is required.
 - `client.js` calls `listen(port)` without a host, so the local forwarding port
   may bind to non-loopback interfaces. Do not assume it is localhost-only.
-- Names plus a shared secret are the effective authorization mechanism. There is
-  no per-agent/client identity or access-control layer.
+- The shared key defines one trust domain. Names select routes rather than
+  separate authorization boundaries, and there is no per-peer identity or
+  access-control layer.
+- Replay protection and public-listener resource limits remain explicitly
+  deferred in `SECURITY.md`. Stream tickets would require a wire-protocol change
+  and must not be added as an unrelated refactor.
 - Server state is private to each `createServer()` instance. Disconnect and
   reconnection changes must preserve empty-group cleanup, port release,
   paired-socket cleanup, and the single-agent-per-name rule.
 - Reconnects create fresh control sockets and decoders. Delay grows
   exponentially with bounded jitter and resets after a valid server message.
+- Established control and tunnel sockets enable kernel TCP keepalive with a
+  30-second initial idle delay; subsequent probe behavior is OS-controlled.
 - `SIGINT` and `SIGTERM` use the asynchronous lifecycle API: listeners stop
   first, active streams receive a bounded drain window, and remaining sockets
   are then destroyed.

@@ -9,7 +9,14 @@ if (require.main === module) loadEnvironment(process.argv[2])
 
 const { PROTOCOL_VERSION, ERRORS } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createMessageDecoder, createFirstMessageDecoder } = require('./utils')
-const { createBackoff, stopListening, destroySockets, waitForSockets, runCli } = require('./lifecycle')
+const {
+  enableSocketKeepAlive,
+  createBackoff,
+  stopListening,
+  destroySockets,
+  waitForSockets,
+  runCli
+} = require('./lifecycle')
 
 function createClient(config = getClientConfig()) {
   const events = new EventEmitter()
@@ -67,6 +74,7 @@ function createClient(config = getClientConfig()) {
   function handleLocalSocket(localSocket) {
     if (!isDataClient || !dataJson || stopping) return localSocket.destroy()
 
+    enableSocketKeepAlive(localSocket)
     localConnections.add(localSocket)
     const dataClient = new net.Socket({ allowHalfOpen: true })
     let isPiped = false
@@ -75,6 +83,7 @@ function createClient(config = getClientConfig()) {
     dataConnections.add(dataClient)
     dataClient.setTimeout(config.handshakeTimeout, () => dataClient.destroy())
     dataClient.on('connect', () => {
+      enableSocketKeepAlive(dataClient)
       writeMessage(
         dataClient,
         JSON.stringify({
@@ -168,6 +177,7 @@ function createClient(config = getClientConfig()) {
 
     socket.on('data', decodeServiceMessage)
     socket.on('connect', () => {
+      enableSocketKeepAlive(socket)
       connectionToServerLost = false
       log.info('Connection to server established, waiting for agent.')
       const message = { protocolVersion: PROTOCOL_VERSION, type: 'client', name: config.name }
