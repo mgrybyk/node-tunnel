@@ -1,7 +1,14 @@
 'use strict'
 
 const net = require('net')
-const { tryParseJSON, log, removeElement, crypt } = require('./utils')
+const {
+  tryParseJSON,
+  log,
+  removeElement,
+  writeMessage,
+  createMessageDecoder,
+  createFirstMessageDecoder
+} = require('./utils')
 const { v4: uuid } = require('uuid')
 
 const clientName = process.env.N_T_CLIENT_NAME || 'dbg'
@@ -24,7 +31,7 @@ let isDataClient = false
 let dataJson
 
 // local
-let localServer = net.createServer({ pauseOnConnect: true }, localSocket => {
+let localServer = net.createServer({ pauseOnConnect: true, allowHalfOpen: true }, localSocket => {
   let isDataClientConnected = false
 
   if (!isDataClient || !dataJson) {
@@ -32,26 +39,33 @@ let localServer = net.createServer({ pauseOnConnect: true }, localSocket => {
   }
 
   localConnections.push(localSocket)
-  let dataClient = new net.Socket()
+  let dataClient = new net.Socket({ allowHalfOpen: true })
   dataClient.uuid = 'client-' + uuid()
   dataConnections.push(dataClient)
   dataClient.on('connect', () => {
-    dataClient.write(crypt.encrypt(`{ "type": "client", "uuid": "${dataClient.uuid}" }`))
+    writeMessage(dataClient, `{ "type": "client", "uuid": "${dataClient.uuid}" }`)
   })
-  dataClient.once('data', data => {
+  const decodeReady = createFirstMessageDecoder((message, remainder) => {
+    dataClient.removeListener('data', decodeReady)
     dataClient
       .pipe(localSocket)
       .pipe(dataClient)
     isDataClientConnected = true
+    if (remainder.length > 0) localSocket.write(remainder)
     localSocket.resume()
-  })
+  }, () => dataClient.destroy())
+  dataClient.on('data', decodeReady)
 
   dataClient.connect(dataJson.port, serverHost)
 
-  dataClient.on('close', err => {
+  dataClient.on('close', hadError => {
+    dataClient.removeListener('data', decodeReady)
     removeElement(dataConnections, dataClient)
-    if (err) log.err(`closed dataClient (${dataClient.uuid})`)
-    if (localSocket && !localSocket.destroyed) localSocket.destroy()
+    if (hadError) log.err(`closed dataClient (${dataClient.uuid})`)
+    if (localSocket && !localSocket.destroyed) {
+      if (hadError) localSocket.destroy()
+      else if (!localSocket.writableEnded) localSocket.end()
+    }
   })
   dataClient.on('error', err => log.err('DATA_CLIENT', err.name || err.code, err.message))
   localSocket.on('error', err => log.err('LOCAL_SOCKET', err.name || err.code, err.message))
@@ -62,7 +76,10 @@ let localServer = net.createServer({ pauseOnConnect: true }, localSocket => {
       dataClient
         .unpipe(localSocket)
         .unpipe(dataClient)
-      if (!dataClient.destroyed) dataClient.destroy()
+      if (!dataClient.destroyed) {
+        if (hadError) dataClient.destroy()
+        else if (!dataClient.writableEnded) dataClient.end()
+      }
     }
   })
 })
@@ -74,12 +91,9 @@ localServer.on('error', err => {
   process.exit(1)
 })
 
-serviceClient.on('data', dataEnc => {
-  // try decrypt otherwise - kill
-  let data = crypt.decrypt(dataEnc.toString('utf8'))
-  if (data === null) return
-
-  let tmpJson = tryParseJSON(data.toString('utf8'))
+const decodeServiceMessage = createMessageDecoder(data => {
+  let tmpJson = tryParseJSON(data)
+  if (!tmpJson || typeof tmpJson !== 'object') return serviceClient.destroy()
   if (tmpJson.pong) return
   if (tmpJson.agentDied || !tmpJson.port) {
     dataJson = null
@@ -90,16 +104,17 @@ serviceClient.on('data', dataEnc => {
   if (dataJson.port === null) return
   log.info('Agent found, ready!')
   isDataClient = true
-})
+}, () => serviceClient.destroy())
+serviceClient.on('data', decodeServiceMessage)
 
 let pinger
 serviceClient.on('connect', () => {
   log.info('Connection to server established, waiting for agent.')
   let msg = { type: 'client', name: clientName }
   if (dataJson && dataJson.uuid) msg.uuid = dataJson.uuid
-  serviceClient.write(crypt.encrypt(JSON.stringify(msg)))
+  writeMessage(serviceClient, JSON.stringify(msg))
   pinger = setInterval(() => {
-    serviceClient.write(crypt.encrypt('' + Math.random()))
+    writeMessage(serviceClient, '' + Math.random())
   }, 15000)
   if (dataJson) isDataClient = true
 })

@@ -1,7 +1,13 @@
 'use strict'
 
 const net = require('net')
-const { tryParseJSON, log, removeElement, crypt } = require('./utils')
+const {
+  tryParseJSON,
+  log,
+  removeElement,
+  writeMessage,
+  createMessageDecoder
+} = require('./utils')
 const { v4: uuid } = require('uuid')
 
 const agentName = process.env.N_T_AGENT_NAME || 'dbg'
@@ -29,91 +35,94 @@ let dataConnections = []
 // remote
 let serviceAgent = new net.Socket()
 
-serviceAgent.on('data', dataEnc => {
-  // try decrypt otherwise - kill
-  let data = crypt.decrypt(dataEnc.toString('utf8'))
-  if (data === null) return
+const decodeServiceMessage = createMessageDecoder(data => {
+  let dataJson = tryParseJSON(data)
+  if (!dataJson || typeof dataJson !== 'object') return serviceAgent.destroy()
 
-  let dataArr = data.split('}')
-  dataArr.forEach(value => {
-    if (!value) return
-    let dataJson = tryParseJSON(value + '}')
-    if (dataJson.error) {
-      log.info(dataJson.error)
-      if (sameNameRetries > 0 && dataJson.error === 'agent with this name already exist') {
-        log.info('attempting to reconnect, retries left:', sameNameRetries)
-        sameNameRetries--
-      } else fatalError = true
-      return serviceAgent.destroy()
+  if (dataJson.error) {
+    log.info(dataJson.error)
+    if (sameNameRetries > 0 && dataJson.error === 'agent with this name already exist') {
+      log.info('attempting to reconnect, retries left:', sameNameRetries)
+      sameNameRetries--
+    } else fatalError = true
+    return serviceAgent.destroy()
+  }
+  sameNameRetries = 3
+  if (dataJson.pong) { return }
+  if (dataJson.uuid && dataJson.port) {
+    serviceUuid = dataJson.uuid
+    dataPort = dataJson.port
+    return log.debug('setting port and uuid:', dataJson.port, dataJson.uuid)
+  }
+  if (!dataJson.data || !dataPort) {
+    return log.debug('todo', dataJson)
+  }
+
+  log.debug('service agent', dataJson)
+  let dataAgent = new net.Socket({ allowHalfOpen: true })
+  let localSocket
+  dataConnections.push(dataAgent)
+  dataAgent.uuid = 'agent-' + uuid()
+
+  dataAgent.on('close', hadError => {
+    removeElement(dataConnections, dataAgent)
+    if (hadError) log.debug(`closed dataAgent '${dataAgent.uuid}'`)
+    if (localSocket && !localSocket.destroyed) {
+      if (hadError) localSocket.destroy()
+      else if (!localSocket.writableEnded) localSocket.end()
     }
-    sameNameRetries = 3
-    if (dataJson.pong) { return }
-    if (dataJson.uuid && dataJson.port) {
-      serviceUuid = dataJson.uuid
-      dataPort = dataJson.port
-      return log.debug('setting port and uuid:', dataJson.port, dataJson.uuid)
-    }
-    if (!dataJson.data || !dataPort) {
-      return log.debug('todo', dataJson)
-    }
-
-    log.debug('service agent', dataJson)
-    let dataAgent = new net.Socket()
-    dataConnections.push(dataAgent)
-    dataAgent.uuid = 'agent-' + uuid()
-
-    dataAgent.on('close', error => {
-      removeElement(dataConnections, dataAgent)
-      if (error) log.debug(`closed dataAgent '${dataAgent.uuid}'`)
-    })
-    dataAgent.on('error', err => log.err('DATA_AGENT', err.name || err.code, err.message))
-    dataAgent.on('connect', () => {
-      log.debug('data agent connected!')
-      let localSocket = new net.Socket()
-      localConnections.push(localSocket)
-      let isPiped = false
-      localSocket.connect(pipePort, pipeHost)
-
-      localSocket.on('connect', function () {
-        log.debug('Connection to local port established.')
-        if (dataAgent.destroyed) {
-          localSocket.destroy()
-        } else {
-          dataAgent.write(crypt.encrypt(`{ "type": "agent", "uuid": "${dataAgent.uuid}" }`))
-          dataAgent
-            .pipe(localSocket)
-            .pipe(dataAgent)
-          isPiped = true
-        }
-      })
-
-      localSocket.on('error', err => log.err('LOCAL_SOCKET', err.name || err.code, err.message))
-
-      localSocket.on('close', () => {
-        removeElement(localConnections, localSocket)
-        log.debug('Connection to local port closed')
-        if (isPiped) {
-          dataAgent
-            .unpipe(localSocket)
-            .unpipe(dataAgent)
-          isPiped = false
-        }
-        if (!dataAgent.destroy) dataAgent.destroy()
-      })
-    })
-    dataAgent.connect(dataPort, serverHost)
   })
-})
+  dataAgent.on('error', err => log.err('DATA_AGENT', err.name || err.code, err.message))
+  dataAgent.on('connect', () => {
+    log.debug('data agent connected!')
+    localSocket = new net.Socket({ allowHalfOpen: true })
+    localConnections.push(localSocket)
+    let isPiped = false
+    localSocket.connect(pipePort, pipeHost)
+
+    localSocket.on('connect', function () {
+      log.debug('Connection to local port established.')
+      if (dataAgent.destroyed) {
+        localSocket.destroy()
+      } else {
+        writeMessage(dataAgent, `{ "type": "agent", "uuid": "${dataAgent.uuid}" }`)
+        dataAgent
+          .pipe(localSocket)
+          .pipe(dataAgent)
+        isPiped = true
+      }
+    })
+
+    localSocket.on('error', err => log.err('LOCAL_SOCKET', err.name || err.code, err.message))
+
+    localSocket.on('close', hadError => {
+      removeElement(localConnections, localSocket)
+      log.debug('Connection to local port closed')
+      if (isPiped) {
+        dataAgent
+          .unpipe(localSocket)
+          .unpipe(dataAgent)
+        isPiped = false
+      }
+      if (!dataAgent.destroyed) {
+        if (hadError) dataAgent.destroy()
+        else if (!dataAgent.writableEnded) dataAgent.end()
+      }
+    })
+  })
+  dataAgent.connect(dataPort, serverHost)
+}, () => serviceAgent.destroy())
+serviceAgent.on('data', decodeServiceMessage)
 
 let pinger
 serviceAgent.on('connect', () => {
   log.info('Connection to server established.')
   let msg = { type: 'agent', name: agentName }
   if (serviceUuid) msg.uuid = serviceUuid
-  serviceAgent.write(crypt.encrypt(JSON.stringify(msg)))
+  writeMessage(serviceAgent, JSON.stringify(msg))
   if (pinger) clearInterval(pinger)
   pinger = setInterval(() => {
-    serviceAgent.write(crypt.encrypt('' + Math.random()))
+    writeMessage(serviceAgent, '' + Math.random())
   }, 15000)
 })
 

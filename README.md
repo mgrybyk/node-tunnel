@@ -6,11 +6,24 @@ Allows you to open to forward any custom port (rdp, ssh, proxies, whatever) from
 
 ![](https://github.com/mgrybyk/node-tunnel/blob/images-only/imgs/client-server-agent.png?raw=true)
 
-1. have latest nodejs (8+) and npm
+1. have Node.js 24 LTS or newer and npm
 2. clone repo
 3. npm i
 
 **WARN: data is NOT encrypted at the moment, except service messages!**
+
+### tests
+
+Run the automated unit and end-to-end suite with:
+
+```sh
+npm test
+```
+
+The end-to-end test starts the real server, two agents, and six clients on
+loopback ports. It runs 72 tunnel connections across three traffic waves, with
+24 connections active in parallel per wave, and verifies binary responses byte
+for byte. No external services are required.
 
 
 ### server

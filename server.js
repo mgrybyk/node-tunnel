@@ -2,7 +2,16 @@
 
 const net = require('net')
 const { v4: uuid } = require('uuid')
-const { tryParseJSON, log, types, verifyDataJson, crypt } = require('./utils')
+const {
+  tryParseJSON,
+  log,
+  types,
+  verifyDataJson,
+  removeElement,
+  writeMessage,
+  createMessageDecoder,
+  createFirstMessageDecoder
+} = require('./utils')
 const { CLIENT, AGENT } = types
 
 let portsFrom = parseInt(process.env.N_T_SERVER_PORTS_FROM) || 3005
@@ -14,15 +23,11 @@ let connections = {}
 let pipes = {}
 
 let serviceServer = net.createServer(serviceSocket => {
-  function onData (dataEnc) {
+  function onMessage (data) {
     // known agent or client, sending pong
     if (serviceSocket.cProps && serviceSocket.cProps.uuid) {
-      return serviceSocket.write(crypt.encrypt(`{"pong":${Math.random()}}`))
+      return writeMessage(serviceSocket, `{"pong":${Math.random()}}`)
     }
-
-    // try decrypt otherwise - kill
-    let data = crypt.decrypt(dataEnc.toString('utf8'))
-    if (data === null) return serviceSocket.destroy()
 
     // parse json and validate its structure
     let dataJson = tryParseJSON(data)
@@ -56,7 +61,7 @@ let serviceServer = net.createServer(serviceSocket => {
 
     // kill agent with the same name
     if (dataJson.type === AGENT && Object.keys(connections[dataJson.name][AGENT]).length > 0) {
-      serviceSocket.write(crypt.encrypt('{ "error": "agent with this name already exist" }'))
+      writeMessage(serviceSocket, '{ "error": "agent with this name already exist" }')
       return serviceSocket.destroy()
     }
 
@@ -112,10 +117,11 @@ let serviceServer = net.createServer(serviceSocket => {
     }
   }
 
-  serviceSocket.on('data', onData)
+  const decodeMessage = createMessageDecoder(onMessage, () => serviceSocket.destroy())
+  serviceSocket.on('data', decodeMessage)
   serviceSocket.on('error', err => log.err('SERVICE_SOCKET', err.name || err.code, err.message))
   serviceSocket.on('close', hadError => {
-    serviceSocket.removeAllListeners('data')
+    serviceSocket.removeListener('data', decodeMessage)
     let cProps = serviceSocket.cProps
     if (!cProps) return log.debug('unknown connection closed')
 
@@ -123,7 +129,7 @@ let serviceServer = net.createServer(serviceSocket => {
       // notify clients that agent went offline
       if (connections[cProps.name][CLIENT]) {
         Object.keys(connections[cProps.name][CLIENT]).forEach(clientUuid => {
-          connections[cProps.name][CLIENT][clientUuid].socket.write(crypt.encrypt('{"agentDied": true}'))
+          writeMessage(connections[cProps.name][CLIENT][clientUuid].socket, '{"agentDied": true}')
           connections[cProps.name][CLIENT][clientUuid].socket.destroy()
         })
       }
@@ -186,59 +192,49 @@ function createServer (connectionName, serviceAgentUuid) {
   let conPipes = pipes[connectionName].pipes
   const dataServerPort = connections[connectionName][AGENT][serviceAgentUuid].port
 
-  pipes[connectionName].server = net.createServer(socket => {
-    socket.once('data', dataEnc => {
-      // try decrypt otherwise - kill
-      let data = crypt.decrypt(dataEnc.toString('utf8'))
-      if (data === null) return socket.destroy()
+  pipes[connectionName].server = net.createServer({ allowHalfOpen: true }, socket => {
+    const decodeHandshake = createFirstMessageDecoder((data, remainder) => {
+      socket.removeListener('data', decodeHandshake)
+      socket.pause()
 
       // parse json and validate its structure
-      let dataJson = tryParseJSON(data.toString('utf8'))
+      let dataJson = tryParseJSON(data)
       log.debug(dataJson)
 
       if (!verifyDataJson(dataJson) || !dataJson.uuid) return socket.end()
 
       socket.uuid = dataJson.uuid
+      socket.initialData = remainder.length > 0 ? Buffer.from(remainder) : null
       conPipes[socket.uuid] = { type: dataJson.type }
 
       if (dataJson.type === AGENT) {
         log.debug('before creating pipe; by agent; client sockets:', clientSockets.length)
 
-        // if there are free client sockets ...
-        if (clientSockets.length > 0) {
-          // grab the first client socket available
-          let clientSocket = clientSockets.shift()
-          log.debug('creating pipe; by client')
-
-          // client socket may die before pipes are created
-          if (!clientSocket.uuid || !conPipes[clientSocket.uuid]) {
-            clientSocket.destroy()
-            socket.destroy()
-          } else conPipes[clientSocket.uuid].socket = socket
-
-          // pipe agent <-> client
-          socket.pipe(clientSocket)
-          clientSocket.pipe(socket)
-
-          conPipes[socket.uuid].socket = clientSocket
-
-          // notify client that pipe created and we are ready to go
-          clientSocket.write(crypt.encrypt('' + Math.random())) // just something, it doesn't matter for now
-        } else agentSockets.push(socket)
+        const clientSocket = takeOpenSocket(clientSockets)
+        if (clientSocket) pairSockets(socket, clientSocket)
+        else agentSockets.push(socket)
       } else
         // client
         if (dataJson.type === CLIENT) {
-          clientSockets.push(socket)
-          // notify agent that there is a client
-          log.debug('SENDING NOTIFICATION TO AGENT')
-          connections[connectionName][AGENT][serviceAgentUuid].socket.write(crypt.encrypt('{"data":true}'))
+          const agentSocket = takeOpenSocket(agentSockets)
+          if (agentSocket) pairSockets(agentSocket, socket)
+          else {
+            clientSockets.push(socket)
+            // notify agent that there is a client
+            log.debug('SENDING NOTIFICATION TO AGENT')
+            writeMessage(connections[connectionName][AGENT][serviceAgentUuid].socket, '{"data":true}')
+          }
         }
-    })
+    }, () => socket.destroy())
+
+    socket.on('data', decodeHandshake)
 
     socket.on('error', err => log.err('AGENT_SERVER_SOCKET', err.name || err.code, err.message))
 
     socket.on('close', error => {
-      socket.removeAllListeners('data')
+      socket.removeListener('data', decodeHandshake)
+      removeElement(agentSockets, socket)
+      removeElement(clientSockets, socket)
       // unknown or not piped connection closed
       if (!socket.uuid || !conPipes[socket.uuid]) return
 
@@ -246,14 +242,45 @@ function createServer (connectionName, serviceAgentUuid) {
 
       // unpipe and destroy socket piped to (if not destroyed)
       if (conPipes[socket.uuid].socket) {
-        socket.unpipe(conPipes[socket.uuid].socket)
-        conPipes[socket.uuid].socket.unpipe(socket)
-        if (!conPipes[socket.uuid].socket.destroyed) { conPipes[socket.uuid].socket.destroy() }
+        const pairedSocket = conPipes[socket.uuid].socket
+        socket.unpipe(pairedSocket)
+        pairedSocket.unpipe(socket)
+        if (!pairedSocket.destroyed) {
+          if (error) pairedSocket.destroy()
+          else if (!pairedSocket.writableEnded) pairedSocket.end()
+        }
       }
 
       delete conPipes[socket.uuid]
     })
   })
+
+  function takeOpenSocket (sockets) {
+    let socket
+    while ((socket = sockets.shift())) {
+      if (!socket.destroyed && socket.uuid && conPipes[socket.uuid]) return socket
+    }
+  }
+
+  function pairSockets (agentSocket, clientSocket) {
+    log.debug('creating pipe')
+    conPipes[agentSocket.uuid].socket = clientSocket
+    conPipes[clientSocket.uuid].socket = agentSocket
+
+    agentSocket.pipe(clientSocket)
+    clientSocket.pipe(agentSocket)
+
+    // Tell the client that subsequent bytes are tunneled application data.
+    writeMessage(clientSocket, '' + Math.random())
+
+    if (agentSocket.initialData) clientSocket.write(agentSocket.initialData)
+    if (clientSocket.initialData) agentSocket.write(clientSocket.initialData)
+    agentSocket.initialData = null
+    clientSocket.initialData = null
+
+    agentSocket.resume()
+    clientSocket.resume()
+  }
 
   pipes[connectionName].server.listen(dataServerPort)
   pipes[connectionName].server.on('listening', listener => log.info(`Agent "${connectionName}" connected, dedicated port ${dataServerPort}`))
@@ -264,7 +291,7 @@ function createServer (connectionName, serviceAgentUuid) {
 }
 
 function notify (socket, port, uuid) {
-  return socket && !socket.destroyed && socket.write(crypt.encrypt(`{"port":${port},"uuid":"${uuid}"}`))
+  return writeMessage(socket, `{"port":${port},"uuid":"${uuid}"}`)
 }
 
 // try kill sockets before exit
