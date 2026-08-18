@@ -1,9 +1,6 @@
 # Changelog
 
-Notable changes will be recorded here. This project follows Semantic
-Versioning; the control protocol version is bumped separately whenever a
-release makes a breaking server-agent-client communication change.
+## 0.1.0
 
-## Unreleased
-
-- See the Git history for changes that have not yet been included in a release.
+- Reworked almost the entire project: networking reliability, lifecycle handling, configuration, tests, CI, dependencies, and documentation.
+- Introduced protocol version 2; older servers, agents, and clients are incompatible.

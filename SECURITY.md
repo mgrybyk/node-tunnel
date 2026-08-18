@@ -20,14 +20,14 @@ networks without additional protection.
   target.
 - The client listener does not bind explicitly to loopback. Host firewall rules
   are currently required to prevent unintended remote access.
-
-## Deferred issues
-
 - Authenticated control and data messages do not have replay protection. An
   attacker who captures a valid encrypted handshake may replay it without
   knowing the shared key. A future protocol version can address this with
   server-issued, single-use stream tickets; this is intentionally deferred
   because it changes the connection flow and wire protocol.
+
+## Deferred issues
+
 - Public control and data listeners do not yet have comprehensive connection,
   rate, or memory limits for denial-of-service resistance.
 
