@@ -1,167 +1,238 @@
 'use strict'
 
-const net = require('net')
-const { tryParseJSON, log, removeElement, crypt } = require('./utils')
-const { v4: uuid } = require('uuid')
+const { EventEmitter } = require('node:events')
+const net = require('node:net')
+const { randomUUID } = require('node:crypto')
+const { loadEnvironment, getAgentConfig } = require('./config')
 
-const agentName = process.env.N_T_AGENT_NAME || 'dbg'
+if (require.main === module) loadEnvironment(process.argv[2])
 
-if (agentName.length > 128) {
-  log.info('Name should not be more than 128 symbols length.')
-  process.exit(1)
-}
-const serverHost = process.env.N_T_SERVER_HOST || 'localhost'
-const serverPort = parseInt(process.env.N_T_SERVER_PORT) || 1337
+const { PROTOCOL_VERSION, ERRORS } = require('./protocol')
+const { tryParseJSON, log, writeMessage, createMessageDecoder } = require('./utils')
+const { enableSocketKeepAlive, createBackoff, destroySockets, waitForSockets, runCli } = require('./lifecycle')
 
-// NOTE: I can actually pass these values from client,
-// but it is EXTREMELY not secure
-const pipeHost = process.env.N_T_AGENT_DATA_HOST || 'localhost'
-const pipePort = parseInt(process.env.N_T_AGENT_DATA_PORT) || 8888
-let fatalError = false
-let sameNameRetries = 3
-let serviceUuid
-let dataPort
+function createAgent(config = getAgentConfig()) {
+  const events = new EventEmitter()
+  const localConnections = new Set()
+  const dataConnections = new Set()
+  const backoff = createBackoff({
+    baseDelay: config.reconnectDelay,
+    maxDelay: config.reconnectMaxDelay,
+    jitterPercent: config.reconnectJitterPercent
+  })
 
-let connectionToServerLost = false
-let localConnections = []
-let dataConnections = []
+  let started = false
+  let stopping = false
+  let closePromise
+  let fatalError = false
+  let sameNameRetries = 3
+  let serviceUuid
+  let dataPort
+  let serviceAgent
+  let reconnectTimer
+  let pinger
+  let connectionToServerLost = false
 
-// remote
-let serviceAgent = new net.Socket()
+  function start() {
+    if (started) return Promise.resolve()
+    if (stopping) return Promise.reject(new Error('agent is closing'))
+    started = true
+    connect()
+    return Promise.resolve()
+  }
 
-serviceAgent.on('data', dataEnc => {
-  // try decrypt otherwise - kill
-  let data = crypt.decrypt(dataEnc.toString('utf8'))
-  if (data === null) return
+  function onServiceMessage(socket, data) {
+    const dataJson = tryParseJSON(data)
+    if (!dataJson || typeof dataJson !== 'object') return socket.destroy()
 
-  let dataArr = data.split('}')
-  dataArr.forEach(value => {
-    if (!value) return
-    let dataJson = tryParseJSON(value + '}')
+    if (dataJson.protocolVersion !== PROTOCOL_VERSION) {
+      return stopFatal(
+        `${ERRORS.VERSION_MISMATCH}: agent=${PROTOCOL_VERSION}, server=${dataJson.protocolVersion ?? 'unknown'}`
+      )
+    }
+
     if (dataJson.error) {
       log.info(dataJson.error)
-      if (sameNameRetries > 0 && dataJson.error === 'agent with this name already exist') {
+      if (sameNameRetries > 0 && dataJson.error === ERRORS.DUPLICATE_AGENT) {
         log.info('attempting to reconnect, retries left:', sameNameRetries)
         sameNameRetries--
-      } else fatalError = true
-      return serviceAgent.destroy()
+        return socket.destroy()
+      }
+      return stopFatal(dataJson.error)
     }
+
+    backoff.reset()
     sameNameRetries = 3
-    if (dataJson.pong) { return }
+    if (dataJson.pong) return
     if (dataJson.uuid && dataJson.port) {
       serviceUuid = dataJson.uuid
       dataPort = dataJson.port
       return log.debug('setting port and uuid:', dataJson.port, dataJson.uuid)
     }
-    if (!dataJson.data || !dataPort) {
-      return log.debug('todo', dataJson)
-    }
+    if (!dataJson.data || !dataPort || stopping) return log.debug('ignored service message', dataJson)
 
-    log.debug('service agent', dataJson)
-    let dataAgent = new net.Socket()
-    dataConnections.push(dataAgent)
-    dataAgent.uuid = 'agent-' + uuid()
+    openDataConnection()
+  }
 
-    dataAgent.on('close', error => {
-      removeElement(dataConnections, dataAgent)
-      if (error) log.debug(`closed dataAgent '${dataAgent.uuid}'`)
+  function openDataConnection() {
+    const dataAgent = new net.Socket({ allowHalfOpen: true })
+    let localSocket
+    let isPiped = false
+
+    dataConnections.add(dataAgent)
+    dataAgent.uuid = `agent-${randomUUID()}`
+    dataAgent.setTimeout(config.handshakeTimeout, () => dataAgent.destroy())
+    dataAgent.on('error', error => log.err('DATA_AGENT', error.name || error.code, error.message))
+    dataAgent.on('close', hadError => {
+      dataConnections.delete(dataAgent)
+      if (hadError) log.debug(`closed dataAgent '${dataAgent.uuid}'`)
+      if (localSocket && !localSocket.destroyed) {
+        if (hadError) localSocket.destroy()
+        else if (!localSocket.writableEnded) localSocket.end()
+      }
     })
-    dataAgent.on('error', err => log.err('DATA_AGENT', err.name || err.code, err.message))
     dataAgent.on('connect', () => {
-      log.debug('data agent connected!')
-      let localSocket = new net.Socket()
-      localConnections.push(localSocket)
-      let isPiped = false
-      localSocket.connect(pipePort, pipeHost)
+      if (stopping) return dataAgent.destroy()
+      enableSocketKeepAlive(dataAgent)
 
-      localSocket.on('connect', function () {
-        log.debug('Connection to local port established.')
-        if (dataAgent.destroyed) {
-          localSocket.destroy()
-        } else {
-          dataAgent.write(crypt.encrypt(`{ "type": "agent", "uuid": "${dataAgent.uuid}" }`))
-          dataAgent
-            .pipe(localSocket)
-            .pipe(dataAgent)
-          isPiped = true
-        }
+      localSocket = new net.Socket({ allowHalfOpen: true })
+      localConnections.add(localSocket)
+      localSocket.setTimeout(config.handshakeTimeout, () => localSocket.destroy())
+      localSocket.on('error', error => log.err('LOCAL_SOCKET', error.name || error.code, error.message))
+      localSocket.on('connect', () => {
+        if (dataAgent.destroyed || stopping) return localSocket.destroy()
+        enableSocketKeepAlive(localSocket)
+
+        dataAgent.setTimeout(0)
+        localSocket.setTimeout(0)
+        writeMessage(
+          dataAgent,
+          JSON.stringify({
+            protocolVersion: PROTOCOL_VERSION,
+            type: 'agent',
+            uuid: dataAgent.uuid
+          })
+        )
+        dataAgent.pipe(localSocket).pipe(dataAgent)
+        isPiped = true
       })
-
-      localSocket.on('error', err => log.err('LOCAL_SOCKET', err.name || err.code, err.message))
-
-      localSocket.on('close', () => {
-        removeElement(localConnections, localSocket)
-        log.debug('Connection to local port closed')
+      localSocket.on('close', hadError => {
+        localConnections.delete(localSocket)
         if (isPiped) {
-          dataAgent
-            .unpipe(localSocket)
-            .unpipe(dataAgent)
+          dataAgent.unpipe(localSocket)
+          localSocket.unpipe(dataAgent)
           isPiped = false
         }
-        if (!dataAgent.destroy) dataAgent.destroy()
+        if (!dataAgent.destroyed) {
+          if (hadError) dataAgent.destroy()
+          else if (!dataAgent.writableEnded) dataAgent.end()
+        }
       })
+      localSocket.connect(config.targetPort, config.targetHost)
     })
-    dataAgent.connect(dataPort, serverHost)
-  })
-})
-
-let pinger
-serviceAgent.on('connect', () => {
-  log.info('Connection to server established.')
-  let msg = { type: 'agent', name: agentName }
-  if (serviceUuid) msg.uuid = serviceUuid
-  serviceAgent.write(crypt.encrypt(JSON.stringify(msg)))
-  if (pinger) clearInterval(pinger)
-  pinger = setInterval(() => {
-    serviceAgent.write(crypt.encrypt('' + Math.random()))
-  }, 15000)
-})
-
-serviceAgent.on('error', err => log.err('SERVICE_AGENT', err.name || err.code, err.message))
-
-serviceAgent.on('close', hadError => {
-  if (!connectionToServerLost) {
-    connectionToServerLost = true
-    log.info('Connection to server lost')
+    dataAgent.connect(dataPort, config.serverHost)
   }
-  if (pinger) clearInterval(pinger)
-  dataPort = undefined
-  serviceAgent.destroy()
-  if (!fatalError) {
-    connectWithDelay(50000)
-  }
-})
 
-function connect () {
-  serviceAgent.connect(serverPort, serverHost)
+  function connect() {
+    if (stopping || fatalError) return
+
+    const socket = new net.Socket()
+    const decodeServiceMessage = createMessageDecoder(
+      data => onServiceMessage(socket, data),
+      () => socket.destroy()
+    )
+    serviceAgent = socket
+
+    socket.on('data', decodeServiceMessage)
+    socket.on('connect', () => {
+      enableSocketKeepAlive(socket)
+      connectionToServerLost = false
+      log.info('Connection to server established.')
+      const message = { protocolVersion: PROTOCOL_VERSION, type: 'agent', name: config.name }
+      if (serviceUuid) message.uuid = serviceUuid
+      writeMessage(socket, JSON.stringify(message))
+      startPinger(socket)
+    })
+    socket.on('error', error => log.err('SERVICE_AGENT', error.name || error.code, error.message))
+    socket.on('close', () => {
+      socket.removeListener('data', decodeServiceMessage)
+      if (socket !== serviceAgent) return
+
+      if (!connectionToServerLost && !stopping) {
+        connectionToServerLost = true
+        log.info('Connection to server lost')
+      }
+      clearPinger()
+      dataPort = undefined
+      if (!stopping && !fatalError) connectWithDelay(backoff.next())
+    })
+    socket.connect(config.serverPort, config.serverHost)
+  }
+
+  function connectWithDelay(delay) {
+    if (stopping || fatalError) return
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined
+      connect()
+    }, delay)
+  }
+
+  function startPinger(socket) {
+    clearPinger()
+    pinger = setInterval(() => {
+      writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ping: Math.random() }))
+    }, 15_000)
+  }
+
+  function clearPinger() {
+    if (pinger) clearInterval(pinger)
+    pinger = undefined
+  }
+
+  function stopFatal(message) {
+    if (fatalError) return
+    fatalError = true
+    log.info(message)
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    clearPinger()
+    if (serviceAgent && !serviceAgent.destroyed) serviceAgent.destroy()
+    events.emit('fatal', new Error(message))
+  }
+
+  function close({ force = false } = {}) {
+    if (closePromise) return closePromise
+    stopping = true
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = undefined
+    clearPinger()
+
+    closePromise = (async () => {
+      if (!force) await waitForSockets(dataConnections, config.shutdownTimeout)
+      await Promise.all([destroySockets(localConnections), destroySockets(dataConnections)])
+      await destroySockets(serviceAgent ? [serviceAgent] : [])
+      await new Promise(resolve => setImmediate(resolve))
+      started = false
+      log.info(`Agent stopped. Local connections: ${localConnections.size}, data connections: ${dataConnections.size}`)
+    })()
+
+    return closePromise
+  }
+
+  function getState() {
+    return {
+      started,
+      stopping,
+      localConnections: localConnections.size,
+      dataConnections: dataConnections.size,
+      connected: Boolean(serviceAgent && !serviceAgent.destroyed),
+      dataPort
+    }
+  }
+
+  return Object.assign(events, { start, close, getState })
 }
 
-function connectWithDelay (delay) {
-  if (!delay) return connect()
+module.exports = { createAgent }
 
-  setTimeout(connect, delay)
-}
-
-connectWithDelay(500)
-
-process.on('exit', (code) => {
-  log.info(`Stopping agent, trying to close connections - Local: ${localConnections.length}, Data: ${dataConnections.length}`)
-  localConnections.forEach(localConnection => {
-    if (localConnection && !localConnection.destroyed) {
-      localConnection.unpipe()
-      localConnection.destroy()
-    }
-  })
-  dataConnections.forEach(dataConnection => {
-    if (dataConnection && !dataConnection.destroyed) {
-      dataConnection.unpipe()
-      dataConnection.destroy()
-    }
-  })
-  serviceAgent.end()
-  serviceAgent.destroy()
-})
-
-process.on('SIGINT', () => {
-  process.exit()
-})
+if (require.main === module) runCli(createAgent)

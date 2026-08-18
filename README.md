@@ -1,113 +1,158 @@
-## node-tunnel
+# node-tunnel
 
-> NodeJS port forwarding implementation
+A lightweight TCP tunnel for exposing a service behind NAT through a public
+relay server. It can forward SSH, RDP, proxies, and other TCP protocols.
 
-Allows you to open to forward any custom port (rdp, ssh, proxies, whatever) from machine in some private network (with no public ip) to another machine anywhere else through some server with public ip.
+![Client, server, and agent topology](https://raw.githubusercontent.com/mgrybyk/node-tunnel/refs/heads/images-only/imgs/client-server-agent.png)
 
-![](https://github.com/mgrybyk/node-tunnel/blob/images-only/imgs/client-server-agent.png?raw=true)
+> [!WARNING]
+> Tunnel payloads are plaintext between the client, public server, and agent.
+> Control and data-handshake messages are authenticated and encrypted. Use SSH,
+> TLS, or another end-to-end encrypted protocol for sensitive traffic.
 
-1. have latest nodejs (8+) and npm
-2. clone repo
-3. npm i
+## Requirements
 
-**WARN: data is NOT encrypted at the moment, except service messages!**
+- Node.js 24 LTS or newer
+- npm
 
-
-### server
-
-install server on machine with public ip
-create your own configuration in `.env` file, example:
+```sh
+git clone https://github.com/mgrybyk/node-tunnel.git
+cd node-tunnel
+npm ci
 ```
+
+## Configuration
+
+Each process loads `.env` by default. Start from [.env-example](.env-example)
+and use the same 32-byte `N_T_CRYPT_KEY` on the server, agents, and clients.
+Generate a private key; do not reuse the example below in a real deployment.
+
+### Server
+
+Run this on a host with a public IP:
+
+```dotenv
+N_T_CRYPT_KEY=0123456789abcdef0123456789abcdef
 N_T_SERVER_PORT=32121
 N_T_SERVER_PORTS_FROM=32131
 N_T_SERVER_PORTS_TO=32141
 ```
-NOTE: ports specified should be accessible from internet
 
-### agent
+The control port and the complete data-port range must accept connections from
+the agent and clients.
 
-install agent on machine you want to connect to
-create your own configuration in `.env` file, example:
-```
-N_T_SERVER_HOST=server-with-public-ip
+### Agent
+
+Run this near the private service:
+
+```dotenv
+N_T_CRYPT_KEY=0123456789abcdef0123456789abcdef
+N_T_SERVER_HOST=server.example.com
 N_T_SERVER_PORT=32121
 
-N_T_AGENT_NAME=test-rdp
+N_T_AGENT_NAME=my-ssh
 N_T_AGENT_DATA_HOST=localhost
-N_T_AGENT_DATA_PORT=3389
-```
-or
-```
-N_T_SERVER_HOST=server-with-public-ip
-N_T_SERVER_PORT=32121
-
-N_T_AGENT_NAME=test-ssh
-N_T_AGENT_DATA_HOST=some-machine
 N_T_AGENT_DATA_PORT=22
 ```
-It is better to use long client/agent names for security reasons!
 
-### client
+`N_T_AGENT_DATA_HOST` may name another machine reachable from the agent.
 
-install client on your local machine
-create your own configuration in `.env` file, example:
-```
-N_T_SERVER_HOST=server-with-public-ip
+### Client
+
+Run this where the user connects:
+
+```dotenv
+N_T_CRYPT_KEY=0123456789abcdef0123456789abcdef
+N_T_SERVER_HOST=server.example.com
 N_T_SERVER_PORT=32121
 
-N_T_CLIENT_NAME=test-rdp
-N_T_CLIENT_PORT=1111
-```
-or
-```
-N_T_SERVER_HOST=server-with-public-ip
-N_T_SERVER_PORT=32121
-
-N_T_CLIENT_NAME=test-ssh
+N_T_CLIENT_NAME=my-ssh
 N_T_CLIENT_PORT=1112
 ```
 
+The client and agent names must match. Connect the application to
+`localhost:1112`.
 
-Finally, to open rdp/ssh connection to machine where agent is installed, connect to localhost:1111 / localhost:1112 with your rdp/ssh client correspondingly
+The client listener does not explicitly bind to loopback and may be reachable
+through other interfaces. Use host firewall rules to prevent unwanted access.
 
+Names select routes; they are not independent credentials. Anyone with the
+shared key must be trusted to access every configured target.
 
-*Client port (`N_T_CLIENT_PORT`) should not be accessible from outside because everyone will access data port opened by agent! 
-If you still want/need it - feel free.*
+## Running
 
+Start each role in a separate terminal or on its respective host:
 
-### set service messages crypt key (not data!)
-
+```sh
+npm run start:server
+npm run start:agent
+npm run start:client
 ```
-# 12 symbols
-N_T_CRYPT_IV=vma4o5q8t439
-# 32 symbols
-N_T_CRYPT_KEY=:AKJSF-238fh;LASJFBH:3rf0=;hn:EW
+
+To load another file, pass it after `--`:
+
+```sh
+npm run start:server -- production.env
 ```
-N_T_CRYPT_KEY / N_T_CRYPT_IV should be the same for server, all agents and clients.
 
+## Reliability settings
 
-### one more img example :)
+```dotenv
+N_T_RECONNECT_DELAY_MS=5000
+N_T_RECONNECT_MAX_DELAY_MS=30000
+N_T_RECONNECT_JITTER_PERCENT=20
+N_T_HANDSHAKE_TIMEOUT_MS=10000
+N_T_CONTROL_IDLE_TIMEOUT_MS=45000
+N_T_SHUTDOWN_TIMEOUT_MS=5000
+```
 
-![](https://github.com/mgrybyk/node-tunnel/blob/images-only/imgs/port-forwarding.png?raw=true)
+Reconnects use capped exponential backoff with jitter. Established control and
+tunnel sockets enable TCP keepalive after 30 seconds of inactivity; the OS
+controls later probes. On `SIGINT` or `SIGTERM`, processes stop accepting work,
+allow active streams a bounded drain period, and then close remaining sockets.
 
----
+## Protocol compatibility
 
-**NOTE**: 
+Server, agents, and clients must use the same protocol version. A mismatched
+agent or client logs an error and exits. Legacy unframed peers are closed after
+the handshake timeout.
 
-you can combine as you want server, agent, client instances. Example: you can have server and client on same machine with public ip.
+## Tests
 
+```sh
+npm run check
+npm test
+npm run test:coverage
+```
 
-*Client port (`N_T_CLIENT_PORT`) should not be accessible from outside because everyone will access data port opened by agent! 
-If you still want/need it - feel free.*
+The E2E test starts a real server, two agents, and six clients. It verifies 72
+binary streams over three traffic waves, with 24 streams active in parallel per
+wave and roughly 158 MiB transferred. Coverage includes spawned processes and
+is enforced per runtime file. CI runs the same checks on Ubuntu and Windows.
 
----
+## JavaScript API
 
-## FAQ
+Entry points are safe to import and expose lifecycle factories:
 
-**Q**: I have public IP according to my provider config, but agent can't connect to server.
+```js
+const { createServer } = require('node-tunnel')
 
-**A**: Multiple issues possible, like: firewalls, your host is connected to router and no virtual server is configured for server ports, etc.
+const server = createServer(options)
+await server.start()
+await server.close()
+```
 
-**Q**: I have multiple messages on client/agent side "Connection to server established."
+`node-tunnel/agent` exports `createAgent`, `node-tunnel/client` exports
+`createClient`, and `node-tunnel/config` exports the environment-backed config
+builders.
 
-**A**: You have to set same *N_T_CRYPT_KEY* (IV/ALG) for server and all agents/clients.
+## Security
+
+See [SECURITY.md](SECURITY.md) for the current trust model and known
+limitations.
+
+## Release checklist
+
+Run `npm ci`, `npm run check`, `npm run test:coverage`, and
+`npm pack --dry-run`; then update `CHANGELOG.md` and the package version. Bump
+`PROTOCOL_VERSION` only for wire-incompatible changes.

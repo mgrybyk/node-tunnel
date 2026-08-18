@@ -1,15 +1,61 @@
 {
   "name": "node-tunnel",
-  "version": "0.0.2",
-  "description": "",
-  "main": "",
-  "dependencies": {
-    "dotenv": "^10.0.0",
-    "uuid": "^8.3.2"
+  "version": "0.1.0",
+  "description": "Expose TCP services behind NAT through a public relay server",
+  "main": "server.js",
+  "exports": {
+    ".": "./server.js",
+    "./agent": "./agent.js",
+    "./client": "./client.js",
+    "./config": "./config.js",
+    "./protocol": "./protocol.js"
   },
-  "devDependencies": {},
-  "scripts": {},
-  "keywords": [],
+  "files": [
+    "agent.js",
+    "client.js",
+    "config.js",
+    "lifecycle.js",
+    "protocol.js",
+    "server.js",
+    "utils.js",
+    ".env-example",
+    "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.9",
+    "c8": "^12.0.0"
+  },
+  "scripts": {
+    "start:server": "node server.js",
+    "start:agent": "node agent.js",
+    "start:client": "node client.js",
+    "check": "biome check .",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "test": "node --test --test-concurrency=3",
+    "test:coverage": "c8 node --test --test-concurrency=2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mgrybyk/node-tunnel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mgrybyk/node-tunnel/issues"
+  },
+  "homepage": "https://github.com/mgrybyk/node-tunnel#readme",
+  "keywords": [
+    "tcp",
+    "tunnel",
+    "port-forwarding",
+    "nat"
+  ],
   "author": "mgrybyk",
-  "license": "ISC"
+  "license": "MIT"
 }
