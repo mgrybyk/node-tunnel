@@ -30,9 +30,6 @@ relay to `localhost:22` on device 1.
 
 ![SSH routed from the client on device 2 through the public server to the agent on device 1](tunnel-flow.png)
 
-The arrows show the route at a glance. Once connected, the server pairs the
-client and agent sockets and relays traffic bidirectionally.
-
 ## Quick start: tunnel SSH
 
 You need Node.js 24 or newer on all three hosts. Clone and install the project
