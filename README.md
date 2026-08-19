@@ -24,32 +24,14 @@ through the same three-process setup.
 
 ## How it works
 
-Here is the common SSH setup: device 1 is private, the relay is in the cloud,
-and port `8000` on device 2 becomes a route to port `22` on device 1.
+The agent on device 1 and the client on device 2 both connect outward to the
+public relay. The client exposes `localhost:8000`, which is routed through the
+relay to `localhost:22` on device 1.
 
-```mermaid
-flowchart LR
-    user["You on device 2<br/>ssh user@localhost -p 8000"]
-    client["Client<br/>localhost:8000"]
-    server(("Server<br/>public cloud"))
-    agent["Agent<br/>device 1"]
-    ssh["SSH service<br/>localhost:22"]
+![SSH routed from the client on device 2 through the public server to the agent on device 1](tunnel-flow.png)
 
-    user --> client
-    client <--> server
-    server <--> agent
-    agent --> ssh
-```
-
-The public server pairs the client and agent sockets and relays the bytes. It
-does not need a direct connection to device 1; the agent opens that side of the
-route from inside the private network.
-
-> [!WARNING]
-> Tunnel payloads pass through the public server as plaintext. Control and
-> data-handshake messages are authenticated and encrypted, but application
-> traffic is not. Use an end-to-end encrypted protocol such as SSH or TLS for
-> sensitive traffic. See [Security](#security) for the complete trust model.
+The arrows show the route at a glance. Once connected, the server pairs the
+client and agent sockets and relays traffic bidirectionally.
 
 ## Quick start: tunnel SSH
 
@@ -186,6 +168,12 @@ await server.close()
 | `node-tunnel/config` | Environment-backed config builders |
 
 ## Security
+
+> [!WARNING]
+> Tunnel payloads pass through the public server as plaintext. Control and
+> data-handshake messages are authenticated and encrypted, but application
+> traffic is not. Use an end-to-end encrypted protocol such as SSH or TLS for
+> sensitive traffic. See [Security](#security) for the complete trust model.
 
 This project is still a prototype and should not be exposed to untrusted
 networks without additional protection. [SECURITY.md](SECURITY.md) documents
