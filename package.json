@@ -18,7 +18,9 @@
     "protocol.js",
     "server.js",
     "utils.js",
+    "benchmark",
     ".env-example",
+    "BENCHMARK.md",
     "README.md",
     "SECURITY.md",
     "CHANGELOG.md",
@@ -39,6 +41,8 @@
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format:check": "biome format .",
+    "benchmark": "node benchmark/runner.js",
+    "benchmark:compare": "node benchmark/compare.js",
     "test": "node --test --test-concurrency=3",
     "test:coverage": "c8 node --test --test-concurrency=2"
   },

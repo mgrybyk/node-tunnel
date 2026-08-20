@@ -190,6 +190,11 @@ exercises 72 binary streams over three traffic waves, with 24 streams active in
 parallel per wave and roughly 158 MiB transferred. CI runs checks and coverage
 on Ubuntu and Windows.
 
+### Benchmarking
+
+See [BENCHMARK.md](BENCHMARK.md) for the sustained 3-agent/12-client scenario,
+outage preset, JSON reports, failure diagnostics, and comparison format.
+
 For a release, also run `npm pack --dry-run`, update `CHANGELOG.md`, and bump
 `PROTOCOL_VERSION` only when messages, framing, handshakes, or other wire
 semantics become incompatible.
