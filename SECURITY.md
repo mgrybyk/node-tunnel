@@ -20,15 +20,18 @@ networks without additional protection.
   target.
 - The client listener does not bind explicitly to loopback. Host firewall rules
   are currently required to prevent unintended remote access.
-- Authenticated control and data messages do not have replay protection. An
-  attacker who captures a valid encrypted handshake may replay it without
-  knowing the shared key. A future protocol version can address this with
-  server-issued, single-use stream tickets; this is intentionally deferred
-  because it changes the connection flow and wire protocol.
+- Data connections require a random server-issued tunnel ticket delivered over
+  the authenticated control channels. Tickets are bound to the current route
+  sessions, expire, and are consumed after one client/agent pair, so replaying a
+  consumed data preface is rejected. Control registration frames still lack a
+  monotonic counter or equivalent replay protection; within the shared-key
+  trust model, a captured registration could still interfere with a peer.
 
 ## Deferred issues
 
-- Public control and data listeners do not yet have comprehensive connection,
-  rate, or memory limits for denial-of-service resistance.
+- The public relay listener does not yet have comprehensive connection or rate
+  limits. Unclassified sockets and tunnel tickets are timed out, and pending
+  tickets are globally bounded, but this is not complete denial-of-service
+  hardening.
 
 Do not treat this document as a security guarantee or completed audit.

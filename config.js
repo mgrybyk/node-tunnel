@@ -51,20 +51,8 @@ function readCommonConfig(env = process.env) {
 }
 
 function getServerConfig(env = process.env) {
-  const servicePort = readPort('N_T_SERVER_PORT', 1337, env)
-  const portsFrom = readPort('N_T_SERVER_PORTS_FROM', 3005, env)
-  const portsTo = readPort('N_T_SERVER_PORTS_TO', 3009, env)
-  if (portsTo < portsFrom) {
-    throw new Error('N_T_SERVER_PORTS_TO must be greater than or equal to N_T_SERVER_PORTS_FROM')
-  }
-  if (servicePort >= portsFrom && servicePort <= portsTo) {
-    throw new Error('N_T_SERVER_PORT must not overlap the server data-port range')
-  }
-
   return {
-    servicePort,
-    portsFrom,
-    portsTo,
+    servicePort: readPort('N_T_SERVER_PORT', 1337, env),
     handshakeTimeout: readInteger('N_T_HANDSHAKE_TIMEOUT_MS', 10_000, { min: 100, max: 300_000 }, env),
     controlIdleTimeout: readInteger('N_T_CONTROL_IDLE_TIMEOUT_MS', 45_000, { min: 1_000, max: 3_600_000 }, env),
     shutdownTimeout: readInteger('N_T_SHUTDOWN_TIMEOUT_MS', 5_000, { min: 0, max: 300_000 }, env)

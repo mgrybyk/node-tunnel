@@ -54,12 +54,9 @@ Create `server.env` on the public host:
 ```dotenv
 N_T_CRYPT_KEY=<same-32-character-key>
 N_T_SERVER_PORT=32121
-N_T_SERVER_PORTS_FROM=32131
-N_T_SERVER_PORTS_TO=32141
 ```
 
-Allow inbound TCP traffic to the control port (`32121`) and the full data-port
-range (`32131–32141`), then start the relay:
+Allow inbound TCP traffic to the relay port (`32121`), then start the relay:
 
 ```sh
 npm run server -- server.env
@@ -117,8 +114,8 @@ client's local port, and the route name.
 
 ## Deployment notes
 
-- One server can host multiple named routes. Each route uses one port from the
-  server's data-port range and accepts one agent plus multiple clients.
+- One server can host multiple named routes. Control connections and independent
+  tunnel data connections all use the single configured relay port.
 - Route names select a target; they are not credentials. Anyone with the shared
   key belongs to the same trust domain and must be trusted with every route.
 - The client listener does not explicitly bind to loopback. Use host firewall

@@ -165,7 +165,7 @@ function normalizeOptions(options) {
     preset,
     scenario: normalizedScenario,
     scenarioFingerprint: fingerprintScenario(normalizedScenario),
-    implementation: String(options.implementation || 'tcp-refactored'),
+    implementation: String(options.implementation || 'tcp-single-port'),
     startupTimeoutMs: positiveInteger(options.startupTimeoutMs || defaultStartupTimeoutMs, 'startup timeout'),
     outputPath: options.outputPath === false ? null : path.resolve(options.outputPath || defaultOutputPath(preset)),
     quiet: Boolean(options.quiet)
@@ -237,9 +237,6 @@ async function startTopology(config) {
     const serviceReservation = await reservePort(excludedPorts)
     reservations.push(serviceReservation)
     excludedPorts.add(serviceReservation.port)
-    const dataReservations = await reserveContiguousPorts(config.scenario.routes, excludedPorts)
-    reservations.push(...dataReservations)
-    for (const item of dataReservations) excludedPorts.add(item.port)
 
     const targetReservations = []
     for (let index = 0; index < config.scenario.routes; index++) {
@@ -274,8 +271,6 @@ async function startTopology(config) {
 
     const serverConfig = {
       servicePort: serviceReservation.port,
-      portsFrom: dataReservations[0].port,
-      portsTo: dataReservations.at(-1).port,
       handshakeTimeout: 10_000,
       controlIdleTimeout: Math.max(120_000, config.scenario.warmupMs + config.scenario.durationMs + 60_000),
       shutdownTimeout: 2_000
@@ -298,7 +293,7 @@ async function startTopology(config) {
           `agent-${routeIndex + 1}`,
           'agent',
           { ...common, name: routeName(routeIndex), targetHost: host, targetPort: item.port },
-          state => state.connected && Boolean(state.dataPort),
+          state => state.connected && state.ready,
           config
         )
       )
@@ -772,29 +767,6 @@ async function reservePort(excludedPorts) {
     const port = server.address().port
     if (!excludedPorts.has(port)) return { server, port }
     await closeServer(server)
-  }
-}
-
-async function reserveContiguousPorts(count, excludedPorts) {
-  while (true) {
-    const reservations = []
-    try {
-      const first = net.createServer()
-      await listen(first, 0)
-      const base = first.address().port
-      reservations.push({ server: first, port: base })
-      if (base + count - 1 > 65535 || excludedPorts.has(base)) throw new Error('unusable contiguous port range')
-      for (let offset = 1; offset < count; offset++) {
-        const port = base + offset
-        if (excludedPorts.has(port)) throw new Error('contiguous port range overlaps a reserved port')
-        const server = net.createServer()
-        await listen(server, port)
-        reservations.push({ server, port })
-      }
-      return reservations
-    } catch (_error) {
-      await Promise.allSettled(reservations.map(item => closeServer(item.server)))
-    }
   }
 }
 

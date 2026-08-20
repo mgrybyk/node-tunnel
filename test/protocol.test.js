@@ -93,16 +93,11 @@ test('port configuration rejects invalid values', () => {
   delete process.env.N_T_TEST_PORT
 })
 
-test('server configuration rejects an overlapping control and data port', () => {
-  assert.throws(
-    () =>
-      getServerConfig({
-        N_T_SERVER_PORT: '3006',
-        N_T_SERVER_PORTS_FROM: '3005',
-        N_T_SERVER_PORTS_TO: '3009'
-      }),
-    /must not overlap/
-  )
+test('server configuration exposes only the shared relay port', () => {
+  const config = getServerConfig({ N_T_SERVER_PORT: '3006' })
+  assert.equal(config.servicePort, 3006)
+  assert.equal('portsFrom' in config, false)
+  assert.equal('portsTo' in config, false)
 })
 
 test('runtime startup rejects a crypt key with the wrong byte length', () => {

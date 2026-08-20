@@ -7,7 +7,7 @@ const { loadEnvironment, getClientConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
-const { PROTOCOL_VERSION, TYPES } = require('./protocol')
+const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createFirstMessageDecoder } = require('./utils')
 const { enableSocketKeepAlive, stopListening, destroySockets, waitForSockets, runCli } = require('./lifecycle')
 const { createTcpByteChannel, bridgeByteChannels } = require('./byte-channel')
@@ -17,25 +17,27 @@ function createClient(config = getClientConfig()) {
   const events = new EventEmitter()
   const localConnections = new Set()
   const dataConnections = new Set()
+  const pendingLocalConnections = new Map()
 
   let localServer
-  let dataJson
+  let serviceUuid
   let started = false
   let stopping = false
   let closePromise
-  let isDataClient = false
+  let ready = false
   const controlSession = createPeerSession({
     config,
     type: TYPES.CLIENT,
     name: config.name,
-    getUuid: () => dataJson?.uuid,
+    getUuid: () => serviceUuid,
     onConnected() {
+      ready = false
       log.info('Connection to server established, waiting for agent.')
-      if (dataJson) isDataClient = true
     },
     onDisconnected() {
       if (!stopping) log.info('Connection to server lost')
-      isDataClient = false
+      ready = false
+      closePendingLocalConnections()
     },
     onMessage,
     onFatal(error) {
@@ -76,14 +78,40 @@ function createClient(config = getClientConfig()) {
   }
 
   function handleLocalSocket(localSocket) {
-    if (!isDataClient || !dataJson || stopping) return localSocket.destroy()
+    if (!ready || stopping) return localSocket.destroy()
 
     enableSocketKeepAlive(localSocket)
     localConnections.add(localSocket)
+    const requestId = randomUUID()
+    const timer = setTimeout(() => localSocket.destroy(), config.handshakeTimeout)
+    pendingLocalConnections.set(requestId, { socket: localSocket, timer })
+
+    localSocket.on('error', error => log.err('LOCAL_SOCKET', error.name || error.code, error.message))
+    localSocket.on('close', () => {
+      localConnections.delete(localSocket)
+      const pending = pendingLocalConnections.get(requestId)
+      if (!pending || pending.socket !== localSocket) return
+      clearTimeout(pending.timer)
+      pendingLocalConnections.delete(requestId)
+    })
+
+    if (!controlSession.send({ openTunnel: { requestId } })) localSocket.destroy()
+  }
+
+  function openDataConnection(requestId, ticket) {
+    const pending = pendingLocalConnections.get(requestId)
+    if (!pending) return controlSession.send({ cancelTunnel: { ticket } })
+    pendingLocalConnections.delete(requestId)
+    clearTimeout(pending.timer)
+
+    const localSocket = pending.socket
+    if (localSocket.destroyed || stopping) {
+      controlSession.send({ cancelTunnel: { ticket } })
+      return localSocket.destroy()
+    }
+
     const dataClient = new net.Socket({ allowHalfOpen: true })
     let bridge
-
-    dataClient.uuid = `client-${randomUUID()}`
     dataConnections.add(dataClient)
     dataClient.setTimeout(config.handshakeTimeout, () => dataClient.destroy())
     dataClient.on('connect', () => {
@@ -92,8 +120,9 @@ function createClient(config = getClientConfig()) {
         dataClient,
         JSON.stringify({
           protocolVersion: PROTOCOL_VERSION,
+          kind: CONNECTION_KINDS.DATA,
           type: TYPES.CLIENT,
-          uuid: dataClient.uuid
+          ticket
         })
       )
     })
@@ -120,43 +149,59 @@ function createClient(config = getClientConfig()) {
     dataClient.on('close', hadError => {
       dataClient.removeListener('data', decodeReady)
       dataConnections.delete(dataClient)
-      if (hadError) log.err(`closed dataClient (${dataClient.uuid})`)
+      if (hadError) log.err('closed dataClient')
       if (!bridge && !localSocket.destroyed) {
         if (hadError) localSocket.destroy()
         else if (!localSocket.writableEnded) localSocket.end()
       }
     })
 
-    localSocket.on('error', error => log.err('LOCAL_SOCKET', error.name || error.code, error.message))
     localSocket.on('close', hadError => {
-      localConnections.delete(localSocket)
       if (!bridge && !dataClient.destroyed) {
         if (hadError) dataClient.destroy()
         else if (!dataClient.writableEnded) dataClient.end()
       }
     })
 
-    dataClient.connect(dataJson.port, config.serverHost)
+    dataClient.connect(config.serverPort, config.serverHost)
   }
 
   function onMessage(message, controls) {
     if (message.error) return controls.fail(message.error)
-    if (message.agentDied || !message.port) {
-      dataJson = null
-      isDataClient = false
+    if (message.agentDied) {
+      ready = false
       return
     }
+    if (message.registration) {
+      serviceUuid = message.registration.uuid
+      ready = Boolean(message.registration.ready)
+      if (ready) log.info('Agent found, ready!')
+      return
+    }
+    if (message.openTunnel) {
+      return openDataConnection(message.openTunnel.requestId, message.openTunnel.ticket)
+    }
+    if (message.tunnelError) {
+      const pending = pendingLocalConnections.get(message.tunnelError.requestId)
+      if (pending) pending.socket.destroy()
+      return
+    }
+    log.debug('ignored service message', message)
+  }
 
-    dataJson = message
-    log.debug(dataJson)
-    isDataClient = true
-    log.info('Agent found, ready!')
+  function closePendingLocalConnections() {
+    for (const pending of pendingLocalConnections.values()) {
+      clearTimeout(pending.timer)
+      pending.socket.destroy()
+    }
+    pendingLocalConnections.clear()
   }
 
   function close({ force = false } = {}) {
     if (closePromise) return closePromise
     stopping = true
     stopListening(localServer)
+    closePendingLocalConnections()
 
     closePromise = (async () => {
       if (!force) await waitForSockets(dataConnections, config.shutdownTimeout)
@@ -176,9 +221,10 @@ function createClient(config = getClientConfig()) {
       started,
       stopping,
       localConnections: localConnections.size,
+      pendingLocalConnections: pendingLocalConnections.size,
       dataConnections: dataConnections.size,
       connected: controlSession.getState().connected,
-      ready: isDataClient
+      ready
     }
   }
 

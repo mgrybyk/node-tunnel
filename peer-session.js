@@ -1,7 +1,7 @@
 'use strict'
 
 const net = require('node:net')
-const { PROTOCOL_VERSION } = require('./protocol')
+const { PROTOCOL_VERSION, CONNECTION_KINDS } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createMessageDecoder } = require('./utils')
 const { enableSocketKeepAlive, createBackoff, destroySockets } = require('./lifecycle')
 
@@ -49,7 +49,7 @@ function createPeerSession({
       enableSocketKeepAlive(nextSocket)
       connected = true
       connectionLossReported = false
-      const message = { protocolVersion: PROTOCOL_VERSION, type, name }
+      const message = { protocolVersion: PROTOCOL_VERSION, kind: CONNECTION_KINDS.CONTROL, type, name }
       const uuid = getUuid()
       if (uuid) message.uuid = uuid
       writeMessage(nextSocket, JSON.stringify(message))
@@ -125,6 +125,10 @@ function createPeerSession({
     onFatal(fatal)
   }
 
+  function send(message) {
+    return writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...message }))
+  }
+
   async function close() {
     stopping = true
     if (reconnectTimer) clearTimeout(reconnectTimer)
@@ -137,7 +141,7 @@ function createPeerSession({
     return { connected, stopping, fatal: fatalError }
   }
 
-  return { start, close, fail, getState }
+  return { start, close, send, fail, getState }
 }
 
 module.exports = { createPeerSession }

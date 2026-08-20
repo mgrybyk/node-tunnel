@@ -4,7 +4,7 @@
 
 `node-tunnel` is a CommonJS TCP relay with three long-running processes:
 
-- `server.js`: control listener, per-agent data ports, and socket pairing.
+- `server.js`: shared relay listener, route/session registry, and open requests.
 - `agent.js`: connects a named route to a private target.
 - `client.js`: exposes a local port for a named route.
 - `config.js`, `lifecycle.js`, `protocol.js`, and `utils.js`: shared config,
@@ -16,12 +16,15 @@ stop with asynchronous `close()`.
 
 Connection flow:
 
-1. Agent and client register over encrypted, newline-framed control sockets.
-2. The server assigns each agent a public data port and notifies matching
-   clients.
-3. A local client connection opens a data socket and notifies the agent.
-4. The agent opens a second data socket and connects to its target.
-5. The server pairs both sockets; payload bytes then pass through unchanged.
+1. Agent and client register over encrypted, newline-framed control sockets on
+   the shared relay port.
+2. A local client connection requests a tunnel over its control session.
+3. The server issues a random, expiring, single-use ticket to the matching
+   client and agent sessions.
+4. Client and agent open independent data connections to the same relay port;
+   the agent also connects to its target.
+5. The server validates and consumes the ticket, pairs both sockets, and then
+   passes payload bytes through unchanged.
 
 The first encrypted data-handshake decoder must preserve any payload bytes
 received in the same TCP chunk.
@@ -54,8 +57,8 @@ Windows.
 - The shared key defines one trust domain. Names choose routes; they are not
   separate credentials. Known limitations are tracked in `SECURITY.md`.
 - The client listener does not explicitly bind to loopback.
-- Preserve server cleanup: release ports, remove empty groups, close paired and
-  unmatched sockets, and allow only one agent per name.
+- Preserve server cleanup: expire/cancel pending tickets, remove empty groups,
+  close paired and unmatched sockets, and allow only one agent per name.
 - Reconnects must create fresh sockets and decoders. Backoff is exponential,
   capped, and jittered.
 - Established sockets use TCP keepalive with a 30-second initial idle delay.

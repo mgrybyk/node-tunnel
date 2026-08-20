@@ -1,169 +1,155 @@
 'use strict'
 
-const net = require('node:net')
-const { PROTOCOL_VERSION } = require('./protocol')
-const { tryParseJSON, log, verifyDataJson, removeElement, writeMessage, createFirstMessageDecoder } = require('./utils')
+const crypto = require('node:crypto')
+const { PROTOCOL_VERSION, TYPES } = require('./protocol')
+const { log, writeMessage } = require('./utils')
 const { createTcpByteChannel, bridgeByteChannels } = require('./byte-channel')
-const { enableSocketKeepAlive, stopListening, destroySockets, waitForSockets } = require('./lifecycle')
+const { destroySockets, waitForSockets } = require('./lifecycle')
 
-function createTcpDataTransport(config, { onTunnelRequested = () => false, onRouteError = () => {} } = {}) {
-  const availablePorts = Array.from(
-    { length: 1 + config.portsTo - config.portsFrom },
-    (_, index) => config.portsFrom + index
-  )
-  const routes = new Set()
+const MAX_PENDING_TUNNELS = 1024
+
+function createTcpDataTransport(config) {
+  const pendingTunnels = new Map()
+  const activeTunnels = new Set()
   const dataSockets = new Set()
   let closing = false
 
-  function openRoute({ name, agentUuid }) {
-    if (closing) return
-    const port = availablePorts.shift()
-    if (!port) return
+  function createPendingTunnel(metadata) {
+    if (closing || pendingTunnels.size >= MAX_PENDING_TUNNELS) return null
 
-    const route = {
-      name,
-      agentUuid,
-      port,
-      server: undefined,
-      sockets: new Set(),
-      agentSockets: [],
-      clientSockets: [],
-      connections: Object.create(null),
-      closed: false
+    let ticket
+    do {
+      ticket = crypto.randomBytes(32).toString('base64url')
+    } while (pendingTunnels.has(ticket))
+
+    const pending = {
+      ...metadata,
+      ticket,
+      client: undefined,
+      agent: undefined,
+      timer: setTimeout(() => cancelPendingTunnel(ticket), config.handshakeTimeout)
     }
-    const dataServer = net.createServer({ allowHalfOpen: true }, socket => handleSocket(route, socket))
-    route.server = dataServer
-    routes.add(route)
-
-    dataServer.listen(port)
-    dataServer.on('listening', () => log.info(`Agent "${name}" connected, dedicated port ${port}`))
-    dataServer.on('error', error => {
-      if (route.closed || closing) return
-      log.info('Something went wrong with agent server. Killing agent...\n', error.name || error.code, error.message)
-      onRouteError(route, error)
-    })
-
-    return route
+    pendingTunnels.set(ticket, pending)
+    return ticket
   }
 
-  function handleSocket(route, socket) {
-    if (closing || route.closed) return socket.destroy()
+  function acceptSocket(socket, message, remainder) {
+    socket.on('error', error => log.err('DATA_SOCKET', error.name || error.code, error.message))
+    if (closing || !isDataMessage(message)) return socket.destroy()
+    const pending = pendingTunnels.get(message.ticket)
+    if (!pending || pending[message.type]) return socket.destroy()
 
-    enableSocketKeepAlive(socket)
     dataSockets.add(socket)
-    route.sockets.add(socket)
     socket.setTimeout(config.handshakeTimeout, () => socket.destroy())
-
-    const decodeHandshake = createFirstMessageDecoder(
-      (data, remainder) => {
-        socket.removeListener('data', decodeHandshake)
-        socket.pause()
-
-        const message = tryParseJSON(data)
-        log.debug(message)
-        if (!message || message.protocolVersion !== PROTOCOL_VERSION) return socket.end()
-        if (!verifyDataJson(message) || !message.uuid) return socket.end()
-
-        socket.uuid = message.uuid
-        route.connections[socket.uuid] = {
-          type: message.type,
-          channel: createTcpByteChannel(socket, { initialData: remainder })
-        }
-
-        if (message.type === 'agent') {
-          const clientSocket = takeOpenSocket(route.clientSockets, route.connections)
-          if (clientSocket) pairSockets(route, socket, clientSocket)
-          else route.agentSockets.push(socket)
-          return
-        }
-
-        const agentSocket = takeOpenSocket(route.agentSockets, route.connections)
-        if (agentSocket) {
-          pairSockets(route, agentSocket, socket)
-        } else {
-          route.clientSockets.push(socket)
-          if (!onTunnelRequested(route)) socket.destroy()
-        }
-      },
-      () => socket.destroy()
-    )
-
-    socket.on('data', decodeHandshake)
-    socket.on('error', error => log.err('AGENT_SERVER_SOCKET', error.name || error.code, error.message))
-    socket.on('close', hadError => {
+    const side = {
+      socket,
+      channel: createTcpByteChannel(socket, { initialData: remainder })
+    }
+    pending[message.type] = side
+    socket.on('close', () => {
       dataSockets.delete(socket)
-      route.sockets.delete(socket)
-      socket.removeListener('data', decodeHandshake)
-      removeElement(route.agentSockets, socket)
-      removeElement(route.clientSockets, socket)
-      if (!socket.uuid || !route.connections[socket.uuid]) return
-
-      const connection = route.connections[socket.uuid]
-      if (hadError) log.err(`closed ${connection.type} socket with uuid: '${socket.uuid}'`)
-      delete route.connections[socket.uuid]
+      if (pendingTunnels.get(pending.ticket) === pending) cancelPendingTunnel(pending.ticket)
+      const active = socket.activeTunnel
+      if (!active) return
+      active.sockets.delete(socket)
+      if (active.sockets.size === 0) activeTunnels.delete(active)
     })
+
+    if (!pending.client || !pending.agent) return
+
+    pendingTunnels.delete(pending.ticket)
+    clearTimeout(pending.timer)
+    const active = {
+      routeName: pending.routeName,
+      agentSession: pending.agentSession,
+      clientSession: pending.clientSession,
+      sockets: new Set([pending.client.socket, pending.agent.socket])
+    }
+    activeTunnels.add(active)
+    pending.client.socket.activeTunnel = active
+    pending.agent.socket.activeTunnel = active
+    pending.client.socket.setTimeout(0)
+    pending.agent.socket.setTimeout(0)
+
+    sendJson(pending.client.socket, { ready: true })
+    bridgeByteChannels(pending.agent.channel, pending.client.channel)
   }
 
-  function pairSockets(route, agentSocket, clientSocket) {
-    log.debug('creating pipe')
-    const agentConnection = route.connections[agentSocket.uuid]
-    const clientConnection = route.connections[clientSocket.uuid]
-    agentConnection.socket = clientSocket
-    clientConnection.socket = agentSocket
-
-    sendJson(clientSocket, { ready: true })
-    bridgeByteChannels(agentConnection.channel, clientConnection.channel)
+  function cancelPendingTunnel(ticket, session) {
+    const pending = pendingTunnels.get(ticket)
+    if (!pending) return false
+    if (session && pending.clientSession !== session && pending.agentSession !== session) return false
+    pendingTunnels.delete(ticket)
+    clearTimeout(pending.timer)
+    for (const side of [pending.client, pending.agent]) {
+      if (side?.socket && !side.socket.destroyed) side.socket.destroy()
+    }
+    return true
   }
 
-  function closeRoute(route, { closeConnections = true } = {}) {
-    if (!route || route.closed) return
-    route.closed = true
-    routes.delete(route)
-    stopListening(route.server)
+  function cancelPendingForSession(session) {
+    for (const pending of [...pendingTunnels.values()]) {
+      if (pending.clientSession === session || pending.agentSession === session) cancelPendingTunnel(pending.ticket)
+    }
+  }
 
-    if (closeConnections) {
-      for (const socket of route.sockets) {
+  function replaceSession(previousSession, nextSession) {
+    cancelPendingForSession(previousSession)
+    for (const active of activeTunnels) {
+      if (active.clientSession === previousSession) active.clientSession = nextSession
+      if (active.agentSession === previousSession) active.agentSession = nextSession
+    }
+  }
+
+  function closeAgentSession(session) {
+    cancelPendingForSession(session)
+    for (const active of [...activeTunnels]) {
+      if (active.agentSession !== session) continue
+      for (const socket of active.sockets) {
         if (!socket.destroyed) socket.destroy()
       }
     }
-    if (route.server?.closeAllConnections) route.server.closeAllConnections()
-    releasePort(route.port)
   }
 
   async function close({ force = false, timeout = config.shutdownTimeout } = {}) {
     closing = true
-    for (const route of routes) stopListening(route.server)
+    for (const ticket of [...pendingTunnels.keys()]) cancelPendingTunnel(ticket)
     if (!force) await waitForSockets(dataSockets, timeout)
     await destroySockets(dataSockets)
-    for (const route of [...routes]) closeRoute(route, { closeConnections: false })
+    activeTunnels.clear()
   }
 
   function getState() {
     return {
-      routes: routes.size,
-      availablePorts: [...availablePorts],
+      pendingTunnels: pendingTunnels.size,
+      activeTunnels: activeTunnels.size,
       dataSockets: dataSockets.size
     }
   }
 
-  function releasePort(port) {
-    if (!port || availablePorts.includes(port)) return
-    availablePorts.push(port)
-    availablePorts.sort((left, right) => left - right)
+  return {
+    createPendingTunnel,
+    acceptSocket,
+    cancelPendingTunnel,
+    cancelPendingForSession,
+    replaceSession,
+    closeAgentSession,
+    close,
+    getState
   }
-
-  return { openRoute, closeRoute, close, getState }
 }
 
-function takeOpenSocket(sockets, connections) {
-  while (sockets.length > 0) {
-    const socket = sockets.shift()
-    if (!socket.destroyed && socket.uuid && connections[socket.uuid]) return socket
-  }
+function isDataMessage(message) {
+  return (
+    message &&
+    (message.type === TYPES.CLIENT || message.type === TYPES.AGENT) &&
+    typeof message.ticket === 'string' &&
+    message.ticket.length > 0
+  )
 }
 
 function sendJson(socket, data) {
   return writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...data }))
 }
 
-module.exports = { createTcpDataTransport }
+module.exports = { MAX_PENDING_TUNNELS, createTcpDataTransport }

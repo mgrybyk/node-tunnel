@@ -2,12 +2,11 @@
 
 const { EventEmitter } = require('node:events')
 const net = require('node:net')
-const { randomUUID } = require('node:crypto')
 const { loadEnvironment, getAgentConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
-const { PROTOCOL_VERSION, TYPES, ERRORS } = require('./protocol')
+const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES, ERRORS } = require('./protocol')
 const { log, writeMessage } = require('./utils')
 const { enableSocketKeepAlive, destroySockets, waitForSockets, runCli } = require('./lifecycle')
 const { createTcpByteChannel, bridgeByteChannels } = require('./byte-channel')
@@ -23,18 +22,19 @@ function createAgent(config = getAgentConfig()) {
   let closePromise
   let sameNameRetries = 3
   let serviceUuid
-  let dataPort
+  let ready = false
   const controlSession = createPeerSession({
     config,
     type: TYPES.AGENT,
     name: config.name,
     getUuid: () => serviceUuid,
     onConnected() {
+      ready = false
       log.info('Connection to server established.')
     },
     onDisconnected() {
       if (!stopping) log.info('Connection to server lost')
-      dataPort = undefined
+      ready = false
     },
     onMessage,
     onFatal(error) {
@@ -63,28 +63,28 @@ function createAgent(config = getAgentConfig()) {
     }
 
     sameNameRetries = 3
-    if (message.uuid && message.port) {
-      serviceUuid = message.uuid
-      dataPort = message.port
-      return log.debug('setting port and uuid:', message.port, message.uuid)
+    if (message.registration) {
+      serviceUuid = message.registration.uuid
+      ready = Boolean(message.registration.ready)
+      return log.debug('agent registered:', serviceUuid)
     }
-    if (!message.data || !dataPort || stopping) return log.debug('ignored service message', message)
+    if (!message.openTunnel?.ticket || !ready || stopping) return log.debug('ignored service message', message)
 
-    openDataConnection()
+    openDataConnection(message.openTunnel.ticket)
   }
 
-  function openDataConnection() {
+  function openDataConnection(ticket) {
     const dataAgent = new net.Socket({ allowHalfOpen: true })
     let localSocket
     let bridge
 
     dataConnections.add(dataAgent)
-    dataAgent.uuid = `agent-${randomUUID()}`
     dataAgent.setTimeout(config.handshakeTimeout, () => dataAgent.destroy())
     dataAgent.on('error', error => log.err('DATA_AGENT', error.name || error.code, error.message))
     dataAgent.on('close', hadError => {
       dataConnections.delete(dataAgent)
-      if (hadError) log.debug(`closed dataAgent '${dataAgent.uuid}'`)
+      if (hadError) log.debug('closed dataAgent')
+      if (!bridge) controlSession.send({ cancelTunnel: { ticket } })
       if (!bridge && localSocket && !localSocket.destroyed) {
         if (hadError) localSocket.destroy()
         else if (!localSocket.writableEnded) localSocket.end()
@@ -106,8 +106,9 @@ function createAgent(config = getAgentConfig()) {
           dataAgent,
           JSON.stringify({
             protocolVersion: PROTOCOL_VERSION,
+            kind: CONNECTION_KINDS.DATA,
             type: TYPES.AGENT,
-            uuid: dataAgent.uuid
+            ticket
           })
         )
         bridge = bridgeByteChannels(createTcpByteChannel(dataAgent), createTcpByteChannel(localSocket))
@@ -115,13 +116,14 @@ function createAgent(config = getAgentConfig()) {
       localSocket.on('close', hadError => {
         localConnections.delete(localSocket)
         if (!bridge && !dataAgent.destroyed) {
+          controlSession.send({ cancelTunnel: { ticket } })
           if (hadError) dataAgent.destroy()
           else if (!dataAgent.writableEnded) dataAgent.end()
         }
       })
       localSocket.connect(config.targetPort, config.targetHost)
     })
-    dataAgent.connect(dataPort, config.serverHost)
+    dataAgent.connect(config.serverPort, config.serverHost)
   }
 
   function close({ force = false } = {}) {
@@ -147,7 +149,7 @@ function createAgent(config = getAgentConfig()) {
       localConnections: localConnections.size,
       dataConnections: dataConnections.size,
       connected: controlSession.getState().connected,
-      dataPort
+      ready
     }
   }
 

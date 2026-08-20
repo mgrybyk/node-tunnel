@@ -1,6 +1,6 @@
 {
   "name": "node-tunnel",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Expose TCP services behind NAT through a public relay server",
   "main": "server.js",
   "exports": {

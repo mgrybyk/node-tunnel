@@ -12,12 +12,11 @@ const { createServer } = require('../server')
 const { createAgent } = require('../agent')
 const { createClient } = require('../client')
 const { TCP_KEEP_ALIVE_INITIAL_DELAY, enableSocketKeepAlive, createBackoff } = require('../lifecycle')
-const { PROTOCOL_VERSION } = require('../protocol')
+const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES } = require('../protocol')
 const { writeMessage, createMessageDecoder, log } = require('../utils')
 const {
   host,
   reserveTopologyPorts,
-  reservePort,
   listen,
   closeServer,
   waitForSocketClose,
@@ -66,11 +65,8 @@ test('server and client reject occupied listener ports without leaking handles',
   silenceInfoLogs(t)
   const serviceBlocker = net.createServer()
   await listenOnAllInterfaces(serviceBlocker)
-  const dataReservation = await reservePort()
   const server = createServer({
     servicePort: serviceBlocker.address().port,
-    portsFrom: dataReservation.port,
-    portsTo: dataReservation.port,
     handshakeTimeout: 500,
     controlIdleTimeout: 5_000,
     shutdownTimeout: 100
@@ -88,7 +84,7 @@ test('server and client reject occupied listener ports without leaking handles',
 
   t.after(async () => {
     await Promise.all([server.close({ force: true }), client.close({ force: true })])
-    await Promise.all([closeServer(serviceBlocker), closeServer(dataReservation.server)])
+    await closeServer(serviceBlocker)
   })
 
   await assert.rejects(server.start(), error => error.code === 'EADDRINUSE')
@@ -107,7 +103,7 @@ test('graceful close drains an active stream through all three applications', { 
   const backend = createDelayedEchoServer(requestReceivedResolve)
   await listen(backend)
 
-  const ports = await reserveTopologyPorts(1, 1)
+  const ports = await reserveTopologyPorts(1)
   const server = createServer(serverConfig(ports))
   const agent = createAgent(
     peerConfig(ports, {
@@ -155,7 +151,7 @@ test('shutdown deadline force-closes a stream that does not drain', { timeout: 1
   const backend = createHoldingServer(receivedResolve)
   await listen(backend)
 
-  const ports = await reserveTopologyPorts(1, 1)
+  const ports = await reserveTopologyPorts(1)
   const server = createServer(serverConfig(ports))
   const agent = createAgent(
     peerConfig(ports, {
@@ -207,7 +203,7 @@ test('a paired stream remains open beyond the handshake timeout', { timeout: 10_
   const backend = createHoldingServer(receivedResolve)
   await listen(backend)
 
-  const ports = await reserveTopologyPorts(1, 1)
+  const ports = await reserveTopologyPorts(1)
   const handshakeTimeout = 100
   const server = createServer({ ...serverConfig(ports), handshakeTimeout })
   const agent = createAgent(
@@ -255,7 +251,7 @@ test('a paired stream remains open beyond the handshake timeout', { timeout: 10_
 
 test('server removes empty connection-name state after client churn', { timeout: 10_000 }, async t => {
   silenceInfoLogs(t)
-  const ports = await reserveTopologyPorts(1, 0)
+  const ports = await reserveTopologyPorts(0)
   const server = createServer(serverConfig(ports))
   t.after(() => server.close({ force: true }))
   await server.start()
@@ -271,9 +267,9 @@ test('server removes empty connection-name state after client churn', { timeout:
   assert.equal(server.getState().serviceSockets, 0)
 })
 
-test('server repeatedly releases and reuses an agent data port', { timeout: 15_000 }, async t => {
+test('server repeatedly removes agent route state without creating data listeners', { timeout: 15_000 }, async t => {
   silenceInfoLogs(t)
-  const ports = await reserveTopologyPorts(1, 0)
+  const ports = await reserveTopologyPorts(0)
   const server = createServer(serverConfig(ports))
   const fatalErrors = []
   server.on('fatal', error => fatalErrors.push(error))
@@ -281,34 +277,43 @@ test('server repeatedly releases and reuses an agent data port', { timeout: 15_0
   await server.start()
 
   for (let index = 0; index < 30; index++) {
-    const assignedPort = await registerAgentAndDisconnect(ports.service, `port-churn-${index}`)
-    assert.equal(assignedPort, ports.dataFrom)
-    await waitForCondition(() => {
-      const state = server.getState()
-      return state.connectionNames === 0 && state.pipes === 0 && state.availablePorts.length === 1
-    })
+    const agent = await registerControl(ports.service, TYPES.AGENT, `route-churn-${index}`)
+    await agent.messages.next()
+    agent.socket.end()
+    await waitForSocketClose(agent.socket)
+    await waitForCondition(() => server.getState().connectionNames === 0)
   }
 
   assert.deepEqual(fatalErrors, [])
-  assert.deepEqual(server.getState().availablePorts, [ports.dataFrom])
+  assert.equal(server.getState().serviceSockets, 0)
+  assert.equal(server.getState().dataSockets, 0)
 })
 
 test('server expires a valid data socket that waits too long for its peer', { timeout: 5_000 }, async t => {
   silenceInfoLogs(t)
-  const ports = await reserveTopologyPorts(1, 0)
+  const ports = await reserveTopologyPorts(0)
   const server = createServer({ ...serverConfig(ports), handshakeTimeout: 250 })
   let agent
+  let client
   let dataSocket
 
   t.after(async () => {
     dataSocket?.destroy()
     agent?.socket.destroy()
+    client?.socket.destroy()
     await server.close({ force: true })
   })
 
   await server.start()
-  agent = await registerAgent(ports.service, 'unmatched-data-socket')
-  dataSocket = net.createConnection({ host, port: agent.assignedPort })
+  agent = await registerControl(ports.service, TYPES.AGENT, 'unmatched-data-socket')
+  client = await registerControl(ports.service, TYPES.CLIENT, 'unmatched-data-socket')
+  await Promise.all([agent.messages.next(), client.messages.next()])
+  writeMessage(
+    client.socket,
+    JSON.stringify({ protocolVersion: PROTOCOL_VERSION, openTunnel: { requestId: 'unmatched-open' } })
+  )
+  const [clientOpen] = await Promise.all([client.messages.next(), agent.messages.next()])
+  dataSocket = net.createConnection({ host, port: ports.service })
   dataSocket.on('error', () => {})
   await new Promise((resolve, reject) => {
     dataSocket.once('connect', resolve)
@@ -316,20 +321,23 @@ test('server expires a valid data socket that waits too long for its peer', { ti
   })
   writeMessage(
     dataSocket,
-    JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'client', uuid: 'client-without-peer' })
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      kind: CONNECTION_KINDS.DATA,
+      type: TYPES.CLIENT,
+      ticket: clientOpen.openTunnel.ticket
+    })
   )
 
-  await waitForCondition(() => server.getState().dataSockets === 1)
+  await waitForCondition(() => server.getState().dataSockets === 1 && server.getState().pendingTunnels === 1)
   await waitForSocketClose(dataSocket, 2_000)
   await waitForCondition(() => server.getState().dataSockets === 0)
-  assert.equal(server.getState().serviceSockets, 1)
+  assert.equal(server.getState().serviceSockets, 2)
 })
 
 function serverConfig(ports) {
   return {
     servicePort: ports.service,
-    portsFrom: ports.dataFrom,
-    portsTo: ports.dataTo,
     handshakeTimeout: 500,
     controlIdleTimeout: 5_000,
     shutdownTimeout: 3_000
@@ -409,82 +417,28 @@ function requestTunnel(port, payload) {
   })
 }
 
-function registerAndDisconnect(port, name) {
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection({ host, port })
-    socket.on('connect', () => {
-      writeMessage(socket, JSON.stringify({ protocolVersion: 2, type: 'client', name }))
-      socket.end()
-    })
-    socket.on('error', reject)
-    waitForSocketClose(socket).then(resolve, reject)
-  })
+async function registerAndDisconnect(port, name) {
+  const client = await registerControl(port, TYPES.CLIENT, name)
+  await client.messages.next()
+  client.socket.end()
+  await waitForSocketClose(client.socket)
 }
 
-function registerAgentAndDisconnect(port, name) {
-  return new Promise((resolve, reject) => {
-    let assignedPort
-    let settled = false
-    const socket = net.createConnection({ host, port })
-    const timer = setTimeout(() => finish(new Error('agent registration timed out')), 3_000)
-    const decode = createMessageDecoder(
-      message => {
-        try {
-          const response = JSON.parse(message)
-          if (!response.port) return
-          assignedPort = response.port
-          socket.end()
-        } catch (error) {
-          finish(error)
-        }
-      },
-      () => finish(new Error('agent registration returned an invalid frame'))
-    )
-
-    socket.on('connect', () => {
-      writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'agent', name }))
-    })
-    socket.on('data', decode)
-    socket.on('error', finish)
-    socket.on('close', () => {
-      if (!assignedPort) return finish(new Error('agent disconnected before receiving a data port'))
-      finish(null, assignedPort)
-    })
-
-    function finish(error, result) {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      socket.destroy()
-      if (error) reject(error)
-      else resolve(result)
-    }
-  })
-}
-
-function registerAgent(port, name) {
+function registerControl(port, type, name) {
   return new Promise((resolve, reject) => {
     let settled = false
     const socket = net.createConnection({ host, port })
-    const timer = setTimeout(() => finish(new Error('agent registration timed out')), 3_000)
-    const decode = createMessageDecoder(
-      message => {
-        try {
-          const response = JSON.parse(message)
-          if (response.port) finish(null, { socket, assignedPort: response.port })
-        } catch (error) {
-          finish(error)
-        }
-      },
-      () => finish(new Error('agent registration returned an invalid frame'))
-    )
+    const timer = setTimeout(() => finish(new Error('control connection timed out')), 3_000)
+    const messages = createMessageQueue(socket)
 
     socket.on('connect', () => {
-      writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'agent', name }))
+      writeMessage(
+        socket,
+        JSON.stringify({ protocolVersion: PROTOCOL_VERSION, kind: CONNECTION_KINDS.CONTROL, type, name })
+      )
+      finish(null, { socket, messages })
     })
-    socket.on('data', decode)
     socket.on('error', finish)
-    socket.on('close', () => finish(new Error('agent disconnected before receiving a data port')))
 
     function finish(error, result) {
       if (settled) return
@@ -498,6 +452,24 @@ function registerAgent(port, name) {
       }
     }
   })
+}
+
+function createMessageQueue(socket) {
+  const messages = []
+  const waiters = []
+  const decode = createMessageDecoder(message => {
+    const parsed = JSON.parse(message)
+    const waiter = waiters.shift()
+    if (waiter) waiter(parsed)
+    else messages.push(parsed)
+  })
+  socket.on('data', decode)
+  return {
+    next() {
+      if (messages.length > 0) return Promise.resolve(messages.shift())
+      return new Promise(resolve => waiters.push(resolve))
+    }
+  }
 }
 
 function listenOnAllInterfaces(server) {

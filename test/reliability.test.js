@@ -36,7 +36,7 @@ test('client becomes usable when its agent connects later', { timeout: 20_000 },
     const backend = createEchoServer()
     await listen(backend)
     servers.push(backend)
-    const ports = await reserveTopologyPorts(1, 1)
+    const ports = await reserveTopologyPorts(1)
     const env = topologyEnv(ports)
 
     const server = startChild('server', 'server.js', env)
@@ -76,7 +76,7 @@ test('agent and client recover after repeated server restarts', { timeout: 30_00
     const backend = createEchoServer()
     await listen(backend)
     servers.push(backend)
-    const ports = await reserveTopologyPorts(1, 1)
+    const ports = await reserveTopologyPorts(1)
     const env = topologyEnv(ports)
 
     let currentServer = startChild('server-before-restart', 'server.js', env)
@@ -105,7 +105,7 @@ test('agent and client recover after repeated server restarts', { timeout: 30_00
 
       currentServer = startChild(`server-after-restart-${restart}`, 'server.js', env)
       children.push(currentServer)
-      await waitForOutput(currentServer, 'Agent "restart-agent" connected, dedicated port')
+      await waitForOutput(currentServer, 'Agent "restart-agent" connected on shared relay port')
       await waitForOutputCount(client, 'Agent found, ready!', restart + 1)
       await assertEcho(ports.clients[0], Buffer.from(`after restart ${restart}`))
     }
@@ -124,7 +124,7 @@ test('connection resets and a slow reader do not poison later streams', { timeou
     const backend = createEchoServer()
     await listen(backend)
     servers.push(backend)
-    const ports = await reserveTopologyPorts(1, 1)
+    const ports = await reserveTopologyPorts(1)
     const env = topologyEnv(ports)
 
     const server = startChild('server', 'server.js', env)
@@ -166,7 +166,7 @@ test('unavailable agent target closes the client stream without hanging', { time
     const unavailableTarget = await reservePort()
     const targetPort = unavailableTarget.port
     await closeServer(unavailableTarget.server)
-    const ports = await reserveTopologyPorts(1, 1)
+    const ports = await reserveTopologyPorts(1)
     const env = topologyEnv(ports)
 
     const server = startChild('server', 'server.js', env)
@@ -191,12 +191,12 @@ test('unavailable agent target closes the client stream without hanging', { time
   }
 })
 
-test('duplicate agents and exhausted data ports terminate rejected agents', { timeout: 20_000 }, async t => {
+test('duplicate agents terminate rejected agents', { timeout: 20_000 }, async t => {
   const children = []
   registerCleanup(t, children, [])
 
   try {
-    const ports = await reserveTopologyPorts(1, 0)
+    const ports = await reserveTopologyPorts(0)
     const env = topologyEnv(ports)
     const server = startChild('server', 'server.js', env)
     const firstAgent = startChild('first-agent', 'agent.js', {
@@ -205,7 +205,7 @@ test('duplicate agents and exhausted data ports terminate rejected agents', { ti
     })
     children.push(server, firstAgent)
 
-    await waitForOutput(server, 'Agent "occupied-name" connected, dedicated port')
+    await waitForOutput(server, 'Agent "occupied-name" connected on shared relay port')
 
     const duplicateAgent = startChild('duplicate-agent', 'agent.js', {
       ...env,
@@ -215,15 +215,6 @@ test('duplicate agents and exhausted data ports terminate rejected agents', { ti
     const duplicateExit = await waitForExit(duplicateAgent)
     assert.equal(duplicateExit.code, 1)
     assert.match(duplicateAgent.stdout + duplicateAgent.stderr, /agent with this name already exists/)
-
-    const noPortAgent = startChild('no-port-agent', 'agent.js', {
-      ...env,
-      N_T_AGENT_NAME: 'different-name'
-    })
-    children.push(noPortAgent)
-    const noPortExit = await waitForExit(noPortAgent)
-    assert.equal(noPortExit.code, 1)
-    assert.match(noPortAgent.stdout + noPortAgent.stderr, /no data ports available/)
   } catch (error) {
     t.diagnostic(formatChildLogs(children))
     throw error
@@ -235,7 +226,7 @@ test('server rejects mismatched and legacy protocol handshakes', { timeout: 15_0
   registerCleanup(t, children, [])
 
   try {
-    const ports = await reserveTopologyPorts(1, 0)
+    const ports = await reserveTopologyPorts(0)
     const env = topologyEnv(ports)
     const server = startChild('server', 'server.js', env)
     children.push(server)
@@ -243,6 +234,7 @@ test('server rejects mismatched and legacy protocol handshakes', { timeout: 15_0
 
     const mismatch = await sendControlMessage(ports.service, {
       protocolVersion: PROTOCOL_VERSION + 1,
+      kind: 'control',
       type: 'client',
       name: 'wrong-version'
     })
@@ -319,8 +311,6 @@ function topologyEnv(ports) {
     N_T_LOG_ERROR: 'true',
     N_T_SERVER_HOST: host,
     N_T_SERVER_PORT: String(ports.service),
-    N_T_SERVER_PORTS_FROM: String(ports.dataFrom),
-    N_T_SERVER_PORTS_TO: String(ports.dataTo),
     N_T_RECONNECT_DELAY_MS: '200',
     N_T_HANDSHAKE_TIMEOUT_MS: '300',
     N_T_CONTROL_IDLE_TIMEOUT_MS: '5000'

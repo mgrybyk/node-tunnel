@@ -7,22 +7,27 @@ const { loadEnvironment, getServerConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
-const { PROTOCOL_VERSION, ERRORS } = require('./protocol')
-const { tryParseJSON, log, types, verifyDataJson, writeMessage, createMessageDecoder } = require('./utils')
+const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES, ERRORS } = require('./protocol')
+const {
+  tryParseJSON,
+  log,
+  verifyDataJson,
+  writeMessage,
+  createMessageDecoder,
+  createFirstMessageDecoder
+} = require('./utils')
 const { enableSocketKeepAlive, stopListening, destroySockets, runCli } = require('./lifecycle')
 const { createTcpDataTransport } = require('./tcp-data-transport')
-const { CLIENT, AGENT } = types
+const { CLIENT, AGENT } = TYPES
 
 function createServer(config = getServerConfig()) {
   const events = new EventEmitter()
   const connections = Object.create(null)
-  const serviceSockets = new Set()
-  const dataTransport = createTcpDataTransport(config, {
-    onTunnelRequested,
-    onRouteError
-  })
+  const controlSockets = new Set()
+  const handshakeSockets = new Set()
+  const dataTransport = createTcpDataTransport(config)
 
-  let serviceServer
+  let relayServer
   let started = false
   let closing = false
   let closePromise
@@ -32,180 +37,244 @@ function createServer(config = getServerConfig()) {
     if (started) return Promise.resolve()
     if (closing) return Promise.reject(new Error('server is closing'))
 
-    serviceServer = net.createServer(handleServiceSocket)
+    relayServer = net.createServer({ allowHalfOpen: true }, handleIncomingSocket)
 
     return new Promise((resolve, reject) => {
       const onStartupError = error => {
-        serviceServer.off('listening', onListening)
+        relayServer.off('listening', onListening)
         reject(error)
       }
       const onListening = () => {
-        serviceServer.off('error', onStartupError)
-        serviceServer.on('error', onRuntimeError)
+        relayServer.off('error', onStartupError)
+        relayServer.on('error', onRuntimeError)
         started = true
         log.info('Server listening on port', config.servicePort)
         resolve()
       }
 
-      serviceServer.once('error', onStartupError)
-      serviceServer.once('listening', onListening)
-      serviceServer.listen(config.servicePort)
+      relayServer.once('error', onStartupError)
+      relayServer.once('listening', onListening)
+      relayServer.listen(config.servicePort)
     })
   }
 
   function onRuntimeError(error) {
-    log.info('Something went wrong with service server. Stopping...\n', error.name || error.code, error.message)
+    log.info('Something went wrong with relay server. Stopping...\n', error.name || error.code, error.message)
     emitFatal(error)
   }
 
-  function handleServiceSocket(serviceSocket) {
-    if (closing) return serviceSocket.destroy()
+  function handleIncomingSocket(socket) {
+    if (closing) return socket.destroy()
 
-    enableSocketKeepAlive(serviceSocket)
-    serviceSockets.add(serviceSocket)
-    serviceSocket.setTimeout(config.handshakeTimeout, () => serviceSocket.destroy())
+    enableSocketKeepAlive(socket)
+    handshakeSockets.add(socket)
+    socket.setTimeout(config.handshakeTimeout, () => socket.destroy())
+    const onHandshakeError = error => log.err('RELAY_SOCKET', error.name || error.code, error.message)
+    const decodeFirstMessage = createFirstMessageDecoder(
+      (data, remainder) => classifySocket(socket, decodeFirstMessage, onHandshakeError, data, remainder),
+      () => socket.destroy()
+    )
 
-    function onMessage(data) {
-      if (serviceSocket.cProps?.uuid) {
-        return sendJson(serviceSocket, { pong: Math.random() })
-      }
+    socket.on('data', decodeFirstMessage)
+    socket.on('error', onHandshakeError)
+    socket.on('close', () => handshakeSockets.delete(socket))
+  }
 
-      const dataJson = tryParseJSON(data)
-      log.debug(dataJson)
+  function classifySocket(socket, decodeFirstMessage, onHandshakeError, data, remainder) {
+    socket.removeListener('data', decodeFirstMessage)
+    socket.removeListener('error', onHandshakeError)
+    handshakeSockets.delete(socket)
 
-      if (!dataJson || typeof dataJson !== 'object') return serviceSocket.destroy()
-      if (dataJson.protocolVersion !== PROTOCOL_VERSION) {
-        sendJson(serviceSocket, {
-          error: ERRORS.VERSION_MISMATCH,
-          receivedProtocolVersion: dataJson.protocolVersion ?? null
-        })
-        return serviceSocket.end()
-      }
-      if (!verifyDataJson(dataJson) || !dataJson.name) return serviceSocket.destroy()
-
-      if (!connections[dataJson.name]) connections[dataJson.name] = Object.create(null)
-      const connectionGroup = connections[dataJson.name]
-      if (!connectionGroup[dataJson.type]) connectionGroup[dataJson.type] = Object.create(null)
-      const roleGroup = connectionGroup[dataJson.type]
-      if (!dataJson.uuid) dataJson.uuid = randomUUID()
-
-      if (roleGroup[dataJson.uuid]) {
-        log.info(`${dataJson.type} "${dataJson.name}" reconnected!`)
-        const deadSocket = roleGroup[dataJson.uuid].socket
-        serviceSocket.cProps = { ...deadSocket.cProps }
-        roleGroup[dataJson.uuid].socket = serviceSocket
-        delete deadSocket.cProps
-        deadSocket.destroy()
-        serviceSocket.setTimeout(config.controlIdleTimeout)
-        return
-      }
-
-      if (dataJson.type === AGENT && Object.keys(roleGroup).length > 0) {
-        sendJson(serviceSocket, { error: ERRORS.DUPLICATE_AGENT })
-        return serviceSocket.end()
-      }
-
-      serviceSocket.cProps = {
-        name: dataJson.name,
-        uuid: dataJson.uuid,
-        type: dataJson.type
-      }
-      serviceSocket.setTimeout(config.controlIdleTimeout)
-      roleGroup[dataJson.uuid] = Object.create(null)
-
-      if (dataJson.type === CLIENT) {
-        registerClient(serviceSocket, dataJson, connectionGroup, roleGroup)
-      } else {
-        registerAgent(serviceSocket, dataJson, connectionGroup, roleGroup)
-      }
+    const message = tryParseJSON(data)
+    log.debug(message)
+    if (!message || typeof message !== 'object') return socket.destroy()
+    if (message.protocolVersion !== PROTOCOL_VERSION) {
+      sendJson(socket, {
+        error: ERRORS.VERSION_MISMATCH,
+        receivedProtocolVersion: message.protocolVersion ?? null
+      })
+      return socket.end()
     }
 
-    const decodeMessage = createMessageDecoder(onMessage, () => serviceSocket.destroy())
-    serviceSocket.on('data', decodeMessage)
-    serviceSocket.on('error', error => log.err('SERVICE_SOCKET', error.name || error.code, error.message))
-    serviceSocket.on('close', () => {
-      serviceSockets.delete(serviceSocket)
-      serviceSocket.removeListener('data', decodeMessage)
-      cleanupServiceSocket(serviceSocket)
+    if (message.kind === CONNECTION_KINDS.DATA) {
+      socket.pause()
+      return dataTransport.acceptSocket(socket, message, remainder)
+    }
+    if (message.kind !== CONNECTION_KINDS.CONTROL) return socket.destroy()
+    registerControlSocket(socket, message, remainder)
+  }
+
+  function registerControlSocket(socket, message, remainder) {
+    if (!verifyDataJson(message) || !message.name) return socket.destroy()
+
+    if (!connections[message.name]) connections[message.name] = Object.create(null)
+    const connectionGroup = connections[message.name]
+    if (!connectionGroup[message.type]) connectionGroup[message.type] = Object.create(null)
+    const roleGroup = connectionGroup[message.type]
+    if (!message.uuid) message.uuid = randomUUID()
+
+    if (roleGroup[message.uuid]) {
+      const connection = roleGroup[message.uuid]
+      const deadSocket = connection.socket
+      log.info(`${message.type} "${message.name}" reconnected!`)
+      dataTransport.replaceSession(deadSocket, socket)
+      socket.cProps = { ...deadSocket.cProps }
+      connection.socket = socket
+      delete deadSocket.cProps
+      deadSocket.destroy()
+      finishControlRegistration(socket, remainder)
+      notifyRegistration(socket, connectionGroup)
+      return
+    }
+
+    if (message.type === AGENT && Object.keys(roleGroup).length > 0) {
+      sendJson(socket, { error: ERRORS.DUPLICATE_AGENT })
+      return socket.end()
+    }
+
+    socket.cProps = { name: message.name, uuid: message.uuid, type: message.type }
+    roleGroup[message.uuid] = { socket }
+    finishControlRegistration(socket, remainder)
+
+    if (message.type === CLIENT) registerClient(socket, connectionGroup)
+    else registerAgent(socket, connectionGroup)
+  }
+
+  function finishControlRegistration(socket, remainder) {
+    controlSockets.add(socket)
+    socket.setTimeout(config.controlIdleTimeout)
+    const decodeMessage = createMessageDecoder(
+      data => onControlMessage(socket, data),
+      () => socket.destroy()
+    )
+    socket.controlDecoder = decodeMessage
+    socket.on('data', decodeMessage)
+    const finishReadableSide = () => {
+      if (!socket.writableEnded) socket.end()
+    }
+    if (socket.readableEnded) finishReadableSide()
+    else socket.on('end', finishReadableSide)
+    socket.on('error', error => log.err('CONTROL_SOCKET', error.name || error.code, error.message))
+    socket.on('close', () => {
+      controlSockets.delete(socket)
+      socket.removeListener('data', decodeMessage)
+      cleanupControlSocket(socket)
     })
+    if (remainder.length > 0) decodeMessage(remainder)
   }
 
-  function registerClient(serviceSocket, dataJson, connectionGroup, clientGroup) {
-    log.info(`Client "${dataJson.name}" connected.`)
-    clientGroup[dataJson.uuid].socket = serviceSocket
-
-    const agentGroup = connectionGroup[AGENT]
-    const agentObj = agentGroup?.[Object.keys(agentGroup)[0]]
-    if (agentObj?.port) notify(serviceSocket, agentObj.port, dataJson.uuid)
+  function registerClient(socket, connectionGroup) {
+    log.info(`Client "${socket.cProps.name}" connected.`)
+    notifyRegistration(socket, connectionGroup)
   }
 
-  function registerAgent(serviceSocket, dataJson, connectionGroup, agentGroup) {
-    const agentObj = agentGroup[dataJson.uuid]
-    agentObj.socket = serviceSocket
-    agentObj.dataRoute = dataTransport.openRoute({ name: dataJson.name, agentUuid: dataJson.uuid })
-    agentObj.port = agentObj.dataRoute?.port
-
-    if (!agentObj.port) {
-      sendJson(serviceSocket, { error: ERRORS.NO_PORTS })
-      delete agentGroup[dataJson.uuid]
-      delete serviceSocket.cProps
-      pruneConnectionGroup(dataJson.name)
-      return serviceSocket.end()
-    }
-
-    notify(serviceSocket, agentObj.port, dataJson.uuid)
+  function registerAgent(socket, connectionGroup) {
+    log.info(`Agent "${socket.cProps.name}" connected on shared relay port ${config.servicePort}`)
+    notifyRegistration(socket, connectionGroup)
 
     const clientGroup = connectionGroup[CLIENT]
     if (!clientGroup) return
-    for (const clientUuid of Object.keys(clientGroup)) {
-      notify(clientGroup[clientUuid].socket, agentObj.port, clientUuid)
-    }
+    for (const client of Object.values(clientGroup)) notifyRegistration(client.socket, connectionGroup)
   }
 
-  function cleanupServiceSocket(serviceSocket) {
-    const cProps = serviceSocket.cProps
+  function notifyRegistration(socket, connectionGroup) {
+    const agent = firstConnection(connectionGroup[AGENT])
+    sendJson(socket, {
+      registration: {
+        uuid: socket.cProps.uuid,
+        ready: socket.cProps.type === AGENT || Boolean(agent?.socket && !agent.socket.destroyed)
+      }
+    })
+  }
+
+  function onControlMessage(socket, data) {
+    const message = tryParseJSON(data)
+    if (!message || typeof message !== 'object') return socket.destroy()
+    if (message.protocolVersion !== PROTOCOL_VERSION) {
+      sendJson(socket, { error: ERRORS.VERSION_MISMATCH, receivedProtocolVersion: message.protocolVersion ?? null })
+      return socket.end()
+    }
+    if (message.ping) return sendJson(socket, { pong: Math.random() })
+
+    const cancelTicket = message.cancelTunnel?.ticket
+    if (typeof cancelTicket === 'string' && cancelTicket.length > 0 && cancelTicket.length <= 128) {
+      dataTransport.cancelPendingTunnel(cancelTicket, socket)
+      return
+    }
+
+    const requestId = message.openTunnel?.requestId
+    if (
+      socket.cProps?.type !== CLIENT ||
+      typeof requestId !== 'string' ||
+      requestId.length === 0 ||
+      requestId.length > 128
+    ) {
+      return socket.destroy()
+    }
+    openTunnel(socket, requestId)
+  }
+
+  function openTunnel(clientSocket, requestId) {
+    const cProps = clientSocket.cProps
+    const connectionGroup = connections[cProps.name]
+    const client = connectionGroup?.[CLIENT]?.[cProps.uuid]
+    const agent = firstConnection(connectionGroup?.[AGENT])
+    if (client?.socket !== clientSocket || !agent?.socket || agent.socket.destroyed) {
+      return sendTunnelError(clientSocket, requestId, ERRORS.TUNNEL_UNAVAILABLE)
+    }
+
+    const ticket = dataTransport.createPendingTunnel({
+      routeName: cProps.name,
+      clientUuid: cProps.uuid,
+      agentUuid: agent.socket.cProps.uuid,
+      clientSession: clientSocket,
+      agentSession: agent.socket
+    })
+    if (!ticket) return sendTunnelError(clientSocket, requestId, ERRORS.TOO_MANY_PENDING_TUNNELS)
+
+    const sentToAgent = sendJson(agent.socket, { openTunnel: { ticket } })
+    const sentToClient = sendJson(clientSocket, { openTunnel: { requestId, ticket } })
+    if (sentToAgent && sentToClient) return true
+
+    dataTransport.cancelPendingTunnel(ticket)
+    if (sentToClient) sendTunnelError(clientSocket, requestId, ERRORS.TUNNEL_UNAVAILABLE)
+    return false
+  }
+
+  function sendTunnelError(socket, requestId, error) {
+    return sendJson(socket, { tunnelError: { requestId, error } })
+  }
+
+  function cleanupControlSocket(socket) {
+    const cProps = socket.cProps
     if (!cProps) return log.debug('unknown connection closed')
 
     const connectionGroup = connections[cProps.name]
     const roleGroup = connectionGroup?.[cProps.type]
     const connection = roleGroup?.[cProps.uuid]
-    if (!connection || connection.socket !== serviceSocket) return
+    if (!connection || connection.socket !== socket) return
+
+    dataTransport.cancelPendingForSession(socket)
+    delete roleGroup[cProps.uuid]
 
     if (cProps.type === CLIENT) {
-      delete roleGroup[cProps.uuid]
       log.info(`${cProps.type} "${cProps.name}" went offline.`)
       pruneConnectionGroup(cProps.name)
       return
     }
 
-    const clientGroup = connectionGroup[CLIENT]
-    if (clientGroup && !closing) {
-      for (const clientUuid of Object.keys(clientGroup)) {
-        const clientSocket = clientGroup[clientUuid].socket
-        sendJson(clientSocket, { agentDied: true })
-        clientSocket.end()
+    if (!closing) {
+      const clientGroup = connectionGroup[CLIENT]
+      if (clientGroup) {
+        for (const client of Object.values(clientGroup)) {
+          sendJson(client.socket, { agentDied: true })
+          client.socket.end()
+        }
       }
+      dataTransport.closeAgentSession(socket)
     }
-
-    const portToRelease = connection.port
-    const dataRoute = connection.dataRoute
-    delete roleGroup[cProps.uuid]
     pruneConnectionGroup(cProps.name)
-
-    dataTransport.closeRoute(dataRoute, { closeConnections: !closing })
-    log.info(cProps.type, cProps.name, 'went offline and released port', portToRelease)
-  }
-
-  function onTunnelRequested(route) {
-    const agentGroup = connections[route.name]?.[AGENT]
-    const agentObj = agentGroup?.[route.agentUuid]
-    return Boolean(agentObj && sendJson(agentObj.socket, { data: true }))
-  }
-
-  function onRouteError(route) {
-    const agentGroup = connections[route.name]?.[AGENT]
-    const agentObj = agentGroup?.[route.agentUuid]
-    if (agentObj?.socket) agentObj.socket.destroy()
+    log.info(cProps.type, cProps.name, 'went offline')
   }
 
   function close({ force = false } = {}) {
@@ -213,14 +282,14 @@ function createServer(config = getServerConfig()) {
     closing = true
 
     closePromise = (async () => {
-      stopListening(serviceServer)
+      stopListening(relayServer)
       await dataTransport.close({ force, timeout: config.shutdownTimeout })
-      await destroySockets(serviceSockets)
-      if (serviceServer?.closeAllConnections) serviceServer.closeAllConnections()
+      await Promise.all([destroySockets(handshakeSockets), destroySockets(controlSockets)])
+      if (relayServer?.closeAllConnections) relayServer.closeAllConnections()
 
       await new Promise(resolve => setImmediate(resolve))
       started = false
-      log.info('Server stopped. Connections closed:', serviceSockets.size + dataTransport.getState().dataSockets)
+      log.info('Server stopped. Connections closed:', controlSockets.size + dataTransport.getState().dataSockets)
     })()
 
     return closePromise
@@ -232,9 +301,10 @@ function createServer(config = getServerConfig()) {
       started,
       closing,
       connectionNames: Object.keys(connections).length,
-      pipes: transportState.routes,
-      availablePorts: transportState.availablePorts,
-      serviceSockets: serviceSockets.size,
+      serviceSockets: controlSockets.size,
+      handshakeSockets: handshakeSockets.size,
+      pendingTunnels: transportState.pendingTunnels,
+      activeTunnels: transportState.activeTunnels,
       dataSockets: transportState.dataSockets
     }
   }
@@ -247,10 +317,6 @@ function createServer(config = getServerConfig()) {
     if (Object.keys(connectionGroup).length === 0) delete connections[name]
   }
 
-  function notify(socket, port, uuid) {
-    return sendJson(socket, { port, uuid })
-  }
-
   function emitFatal(error) {
     if (fatalError) return
     fatalError = true
@@ -258,6 +324,11 @@ function createServer(config = getServerConfig()) {
   }
 
   return Object.assign(events, { start, close, getState })
+}
+
+function firstConnection(group) {
+  if (!group) return undefined
+  return group[Object.keys(group)[0]]
 }
 
 function sendJson(socket, data) {

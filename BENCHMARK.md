@@ -75,12 +75,12 @@ Useful output options are intentionally limited:
 Use `--implementation` for a meaningful transport or code label, for example
 `tcp-before-refactor`, `tcp-node-26`, or `quic-node-26`.
 
-The current refactored TCP code defaults to the `tcp-refactored` label. Keep
+The current single-port TCP code defaults to the `tcp-single-port` label. Keep
 the label explicit for milestone runs:
 
 ```sh
-npm run benchmark -- --preset default --implementation tcp-refactored
-npm run benchmark -- --preset resilience --implementation tcp-refactored
+npm run benchmark -- --preset default --implementation tcp-single-port
+npm run benchmark -- --preset resilience --implementation tcp-single-port
 ```
 
 ## Traffic-process isolation
@@ -100,7 +100,7 @@ than the tunnel, becomes the limiting component.
 ## Resilience semantics
 
 The resilience preset deliberately stops the relay, leaves it unavailable for
-two seconds, and restarts it on the same ports. Existing TCP data sessions are
+two seconds, and restarts it on the same relay port. Existing TCP data sessions are
 expected to disconnect. The logical load sessions reconnect through the normal
 client and agent recovery paths and continue sending validated frames.
 

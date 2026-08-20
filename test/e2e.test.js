@@ -40,15 +40,13 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
       backends.push(await startBackend(agentIndex))
     }
 
-    const ports = await reserveTopologyPorts(agentsCount, agentsCount * clientsPerAgent)
+    const ports = await reserveTopologyPorts(agentsCount * clientsPerAgent)
     const commonEnv = {
       N_T_CRYPT_KEY: cryptKey,
       N_T_LOG_DEBUG: 'false',
       N_T_LOG_ERROR: 'true',
       N_T_SERVER_HOST: host,
-      N_T_SERVER_PORT: String(ports.service),
-      N_T_SERVER_PORTS_FROM: String(ports.dataFrom),
-      N_T_SERVER_PORTS_TO: String(ports.dataTo)
+      N_T_SERVER_PORT: String(ports.service)
     }
 
     const server = startChild('server', 'server.js', commonEnv)
@@ -65,7 +63,7 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
       })
 
       children.push(agent)
-      await waitForOutput(server, `Agent "${name}" connected, dedicated port`, startupTimeout)
+      await waitForOutput(server, `Agent "${name}" connected on shared relay port`, startupTimeout)
     }
 
     const clients = []
