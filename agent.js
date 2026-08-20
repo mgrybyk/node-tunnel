@@ -2,6 +2,7 @@
 
 const { EventEmitter } = require('node:events')
 const net = require('node:net')
+const { connectToRelay } = require('./relay-connection')
 const { loadEnvironment, getAgentConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
@@ -30,10 +31,10 @@ function createAgent(config = getAgentConfig()) {
     getUuid: () => serviceUuid,
     onConnected() {
       ready = false
-      log.info('Connection to server established.')
+      log.info('Connection to relay established.')
     },
     onDisconnected() {
-      if (!stopping) log.info('Connection to server lost')
+      if (!stopping) log.info('Connection to relay lost')
       ready = false
     },
     onMessage,
@@ -74,23 +75,9 @@ function createAgent(config = getAgentConfig()) {
   }
 
   function openDataConnection(ticket) {
-    const dataAgent = new net.Socket({ allowHalfOpen: true })
     let localSocket
     let bridge
-
-    dataConnections.add(dataAgent)
-    dataAgent.setTimeout(config.handshakeTimeout, () => dataAgent.destroy())
-    dataAgent.on('error', error => log.err('DATA_AGENT', error.name || error.code, error.message))
-    dataAgent.on('close', hadError => {
-      dataConnections.delete(dataAgent)
-      if (hadError) log.debug('closed dataAgent')
-      if (!bridge) controlSession.send({ cancelTunnel: { ticket } })
-      if (!bridge && localSocket && !localSocket.destroyed) {
-        if (hadError) localSocket.destroy()
-        else if (!localSocket.writableEnded) localSocket.end()
-      }
-    })
-    dataAgent.on('connect', () => {
+    const dataAgent = connectToRelay(config, { allowHalfOpen: true }, () => {
       if (stopping) return dataAgent.destroy()
       enableSocketKeepAlive(dataAgent)
 
@@ -123,7 +110,19 @@ function createAgent(config = getAgentConfig()) {
       })
       localSocket.connect(config.targetPort, config.targetHost)
     })
-    dataAgent.connect(config.serverPort, config.serverHost)
+
+    dataConnections.add(dataAgent)
+    dataAgent.setTimeout(config.handshakeTimeout, () => dataAgent.destroy())
+    dataAgent.on('error', error => log.err('DATA_AGENT', error.name || error.code, error.message))
+    dataAgent.on('close', hadError => {
+      dataConnections.delete(dataAgent)
+      if (hadError) log.debug('closed dataAgent')
+      if (!bridge) controlSession.send({ cancelTunnel: { ticket } })
+      if (!bridge && localSocket && !localSocket.destroyed) {
+        if (hadError) localSocket.destroy()
+        else if (!localSocket.writableEnded) localSocket.end()
+      }
+    })
   }
 
   function close({ force = false } = {}) {

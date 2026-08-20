@@ -3,7 +3,7 @@
 const { EventEmitter } = require('node:events')
 const net = require('node:net')
 const { randomUUID } = require('node:crypto')
-const { loadEnvironment, getServerConfig } = require('./config')
+const { loadEnvironment, getRelayConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
@@ -20,14 +20,14 @@ const { enableSocketKeepAlive, stopListening, destroySockets, runCli } = require
 const { createTcpDataTransport } = require('./tcp-data-transport')
 const { CLIENT, AGENT } = TYPES
 
-function createServer(config = getServerConfig()) {
+function createRelay(config = getRelayConfig()) {
   const events = new EventEmitter()
   const connections = Object.create(null)
   const controlSockets = new Set()
   const handshakeSockets = new Set()
   const dataTransport = createTcpDataTransport(config)
 
-  let relayServer
+  let relayRelay
   let started = false
   let closing = false
   let closePromise
@@ -35,31 +35,31 @@ function createServer(config = getServerConfig()) {
 
   function start() {
     if (started) return Promise.resolve()
-    if (closing) return Promise.reject(new Error('server is closing'))
+    if (closing) return Promise.reject(new Error('relay is closing'))
 
-    relayServer = net.createServer({ allowHalfOpen: true }, handleIncomingSocket)
+    relayRelay = net.createServer({ allowHalfOpen: true }, handleIncomingSocket)
 
     return new Promise((resolve, reject) => {
       const onStartupError = error => {
-        relayServer.off('listening', onListening)
+        relayRelay.off('listening', onListening)
         reject(error)
       }
       const onListening = () => {
-        relayServer.off('error', onStartupError)
-        relayServer.on('error', onRuntimeError)
+        relayRelay.off('error', onStartupError)
+        relayRelay.on('error', onRuntimeError)
         started = true
-        log.info('Server listening on port', config.servicePort)
+        log.info(`Relay listening on ${config.serviceHost}:${config.servicePort}`)
         resolve()
       }
 
-      relayServer.once('error', onStartupError)
-      relayServer.once('listening', onListening)
-      relayServer.listen(config.servicePort)
+      relayRelay.once('error', onStartupError)
+      relayRelay.once('listening', onListening)
+      relayRelay.listen(config.servicePort, config.serviceHost)
     })
   }
 
   function onRuntimeError(error) {
-    log.info('Something went wrong with relay server. Stopping...\n', error.name || error.code, error.message)
+    log.info('Something went wrong with relay. Stopping...\n', error.name || error.code, error.message)
     emitFatal(error)
   }
 
@@ -282,14 +282,14 @@ function createServer(config = getServerConfig()) {
     closing = true
 
     closePromise = (async () => {
-      stopListening(relayServer)
+      stopListening(relayRelay)
       await dataTransport.close({ force, timeout: config.shutdownTimeout })
       await Promise.all([destroySockets(handshakeSockets), destroySockets(controlSockets)])
-      if (relayServer?.closeAllConnections) relayServer.closeAllConnections()
+      if (relayRelay?.closeAllConnections) relayRelay.closeAllConnections()
 
       await new Promise(resolve => setImmediate(resolve))
       started = false
-      log.info('Server stopped. Connections closed:', controlSockets.size + dataTransport.getState().dataSockets)
+      log.info('Relay stopped. Connections closed:', controlSockets.size + dataTransport.getState().dataSockets)
     })()
 
     return closePromise
@@ -335,6 +335,6 @@ function sendJson(socket, data) {
   return writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...data }))
 }
 
-module.exports = { createServer }
+module.exports = { createRelay }
 
-if (require.main === module) runCli(createServer)
+if (require.main === module) runCli(createRelay)

@@ -230,7 +230,7 @@ async function startTopology(config) {
   const excludedPorts = new Set()
   const components = []
   const archivedMeasurements = []
-  let server
+  let relay
   let serverRestart = 0
 
   try {
@@ -253,7 +253,7 @@ async function startTopology(config) {
       clientReservations.push(item)
       excludedPorts.add(item.port)
     }
-    await Promise.all(reservations.map(item => closeServer(item.server)))
+    await Promise.all(reservations.map(item => closeServer(item.relay)))
 
     const targetWorkers = await Promise.all(
       targetReservations.map((item, routeIndex) =>
@@ -275,12 +275,12 @@ async function startTopology(config) {
       controlIdleTimeout: Math.max(120_000, config.scenario.warmupMs + config.scenario.durationMs + 60_000),
       shutdownTimeout: 2_000
     }
-    server = await startApplicationComponent('server', 'server', serverConfig, state => state.started, config)
-    components.push(server)
+    relay = await startApplicationComponent('relay', 'relay', serverConfig, state => state.started, config)
+    components.push(relay)
 
     const common = {
-      serverHost: host,
-      serverPort: serviceReservation.port,
+      relayHost: host,
+      relayPort: serviceReservation.port,
       reconnectDelay: 100,
       reconnectMaxDelay: 500,
       reconnectJitterPercent: 0,
@@ -361,8 +361,8 @@ async function startTopology(config) {
       },
       async restartServer(downtimeMs) {
         const faultStartedAt = Date.now()
-        archivedMeasurements.push(componentMeasurement(server, await server.request('metrics')))
-        await server.close(true)
+        archivedMeasurements.push(componentMeasurement(relay, await relay.request('metrics')))
+        await relay.close(true)
         await waitFor(
           async () => {
             const states = await Promise.all(loadWorkers.map(worker => worker.request('state')))
@@ -373,15 +373,15 @@ async function startTopology(config) {
         )
         await delay(downtimeMs)
         serverRestart++
-        server = await startApplicationComponent(
+        relay = await startApplicationComponent(
           `server-restart-${serverRestart}`,
-          'server',
+          'relay',
           serverConfig,
           state => state.started,
           config
         )
-        server.baseline = zeroMetrics()
-        components.push(server)
+        relay.baseline = zeroMetrics()
+        components.push(relay)
         await waitFor(
           async () => {
             const states = await Promise.all(loadWorkers.map(worker => worker.request('state')))
@@ -422,7 +422,7 @@ async function startTopology(config) {
       }
     }
   } catch (error) {
-    await Promise.allSettled(reservations.map(item => closeServer(item.server)))
+    await Promise.allSettled(reservations.map(item => closeServer(item.relay)))
     await Promise.allSettled(components.toReversed().map(component => component.close(true)))
     throw error
   }
@@ -431,7 +431,7 @@ async function startTopology(config) {
 function startApplicationComponent(label, role, componentConfig, ready, config) {
   return startManagedChild({
     label,
-    category: role === 'server' ? 'server' : `${role}s`,
+    category: role === 'relay' ? 'relay' : `${role}s`,
     script: componentChildPath,
     args: [role],
     config: componentConfig,
@@ -543,7 +543,7 @@ function buildResult(config, loadResults, targetStats, components, resilience) {
   const durationSeconds = config.scenario.durationMs / 1000
   const aggregate = aggregateTraffic(loadResults)
   const totalWireBytes = aggregate.bytesClientToAgent + aggregate.bytesAgentToClient
-  const channelCpuMillis = ['server', 'agents', 'clients'].reduce(
+  const channelCpuMillis = ['relay', 'agents', 'clients'].reduce(
     (sum, category) => sum + components[category].cpuUserMillis + components[category].cpuSystemMillis,
     0
   )
@@ -562,7 +562,7 @@ function buildResult(config, loadResults, targetStats, components, resilience) {
     incompleteFrames: aggregate.incompleteFrames,
     integrityErrors: aggregate.integrityErrors,
     channelCpuMillisPerGiB: totalWireBytes > 0 ? channelCpuMillis / (totalWireBytes / 1024 ** 3) : null,
-    serverPeakRssMiB: components.server.peakRssBytes / 1024 ** 2,
+    serverPeakRssMiB: components.relay.peakRssBytes / 1024 ** 2,
     agentsPeakRssMiB: components.agents.peakRssBytes / 1024 ** 2,
     clientsPeakRssMiB: components.clients.peakRssBytes / 1024 ** 2,
     recoveryMs: resilience?.recoveryMs ?? null
@@ -665,12 +665,12 @@ function componentMeasurement(component, finalMetrics) {
 }
 
 function summarizeComponentMeasurements(values) {
-  const categories = ['server', 'agents', 'clients', 'loadWorkers', 'targetWorkers']
+  const categories = ['relay', 'agents', 'clients', 'loadWorkers', 'targetWorkers']
   return Object.fromEntries(
     categories.map(category => {
       const entries = values.filter(value => value.category === category)
       const peakRssBytes =
-        category === 'server'
+        category === 'relay'
           ? Math.max(0, ...entries.map(entry => entry.peakRssBytes))
           : entries.reduce((sum, entry) => sum + entry.peakRssBytes, 0)
       return [
@@ -762,11 +762,11 @@ function getGitMetadata() {
 
 async function reservePort(excludedPorts) {
   while (true) {
-    const server = net.createServer()
-    await listen(server, 0)
-    const port = server.address().port
-    if (!excludedPorts.has(port)) return { server, port }
-    await closeServer(server)
+    const relay = net.createServer()
+    await listen(relay, 0)
+    const port = relay.address().port
+    if (!excludedPorts.has(port)) return { relay, port }
+    await closeServer(relay)
   }
 }
 

@@ -1,6 +1,6 @@
 'use strict'
 
-const PROTOCOL_VERSION = 4
+const PROTOCOL_VERSION = 5
 
 const CONNECTION_KINDS = Object.freeze({
   CONTROL: 'control',

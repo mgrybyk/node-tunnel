@@ -4,7 +4,7 @@ The benchmark measures sustained tunnel-channel quality under simultaneous,
 interactive/proxy-shaped traffic. It is not a collection of isolated transport
 microbenchmarks and it does not attempt to implement the SSH or RDP protocols.
 
-Every payload frame travels through the real server, client, and agent and is
+Every payload frame travels through the real relay, client, and agent and is
 verified byte-for-byte after the agent-side target returns it.
 
 ## Scenarios
@@ -21,17 +21,17 @@ The default and resilience topology is:
 
 ```text
 client-1-1 ─┐
-client-1-2 ─┼─ server ─ agent-1 ─ target-1
+client-1-2 ─┼─ relay ─ agent-1 ─ target-1
 client-1-3 ─┤
 client-1-4 ─┘
 
 client-2-1 ─┐
-client-2-2 ─┼─ server ─ agent-2 ─ target-2
+client-2-2 ─┼─ relay ─ agent-2 ─ target-2
 client-2-3 ─┤
 client-2-4 ─┘
 
 client-3-1 ─┐
-client-3-2 ─┼─ server ─ agent-3 ─ target-3
+client-3-2 ─┼─ relay ─ agent-3 ─ target-3
 client-3-3 ─┤
 client-3-4 ─┘
 ```
@@ -85,7 +85,7 @@ npm run benchmark -- --preset resilience --implementation tcp-single-port
 
 ## Traffic-process isolation
 
-The relay server, every agent, and every client run in separate child processes,
+The relay, every agent, and every client run in separate child processes,
 matching their normal independent event loops. Payload work is also kept out of
 the benchmark orchestrator:
 
@@ -93,7 +93,7 @@ the benchmark orchestrator:
 - one target worker per route returns agent-side traffic;
 - the parent process only coordinates timing, faults, and result aggregation.
 
-Load and target worker CPU/RSS are reported separately from server, agent, and
+Load and target worker CPU/RSS are reported separately from relay, agent, and
 client resource use. This makes it visible if the traffic generator, rather
 than the tunnel, becomes the limiting component.
 
@@ -122,7 +122,7 @@ Each report contains:
 - a flat `metrics` object intended for side-by-side comparison;
 - `metricDefinitions` with units and whether higher or lower is better;
 - aggregate, per-route, and per-session traffic and latency results;
-- separate server, agent, client, load-worker, and target-worker CPU/RSS;
+- separate relay, agent, client, load-worker, and target-worker CPU/RSS;
 - outage and recovery data for the resilience scenario;
 - diagnostics and partial results when a run fails.
 

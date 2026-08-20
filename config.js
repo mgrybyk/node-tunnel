@@ -40,8 +40,8 @@ function readCommonConfig(env = process.env) {
   )
 
   return {
-    serverHost: env.N_T_SERVER_HOST || 'localhost',
-    serverPort: readPort('N_T_SERVER_PORT', 1337, env),
+    relayHost: env.N_T_RELAY_HOST || '127.0.0.1',
+    relayPort: readPort('N_T_RELAY_PORT', 1337, env),
     reconnectDelay,
     reconnectMaxDelay,
     reconnectJitterPercent: readInteger('N_T_RECONNECT_JITTER_PERCENT', 20, { min: 0, max: 100 }, env),
@@ -50,9 +50,10 @@ function readCommonConfig(env = process.env) {
   }
 }
 
-function getServerConfig(env = process.env) {
+function getRelayConfig(env = process.env) {
   return {
-    servicePort: readPort('N_T_SERVER_PORT', 1337, env),
+    serviceHost: env.N_T_RELAY_BIND_HOST || '0.0.0.0',
+    servicePort: readPort('N_T_RELAY_PORT', 1337, env),
     handshakeTimeout: readInteger('N_T_HANDSHAKE_TIMEOUT_MS', 10_000, { min: 100, max: 300_000 }, env),
     controlIdleTimeout: readInteger('N_T_CONTROL_IDLE_TIMEOUT_MS', 45_000, { min: 1_000, max: 3_600_000 }, env),
     shutdownTimeout: readInteger('N_T_SHUTDOWN_TIMEOUT_MS', 5_000, { min: 0, max: 300_000 }, env)
@@ -62,6 +63,7 @@ function getServerConfig(env = process.env) {
 function getAgentConfig(env = process.env) {
   return {
     ...readCommonConfig(env),
+    useTLS: env.N_T_USE_TLS === 'true',
     name: readName('N_T_AGENT_NAME', 'dbg', env),
     targetHost: env.N_T_AGENT_DATA_HOST || 'localhost',
     targetPort: readPort('N_T_AGENT_DATA_PORT', 8888, env)
@@ -71,7 +73,9 @@ function getAgentConfig(env = process.env) {
 function getClientConfig(env = process.env) {
   return {
     ...readCommonConfig(env),
+    useTLS: env.N_T_USE_TLS === 'true',
     name: readName('N_T_CLIENT_NAME', 'dbg', env),
+    localHost: env.N_T_CLIENT_BIND_HOST || '127.0.0.1',
     localPort: readPort('N_T_CLIENT_PORT', 8000, env)
   }
 }
@@ -81,7 +85,7 @@ module.exports = {
   readInteger,
   readPort,
   readName,
-  getServerConfig,
+  getRelayConfig,
   getAgentConfig,
   getClientConfig
 }

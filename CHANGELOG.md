@@ -1,10 +1,21 @@
 # Changelog
 
+## 0.5.0
+
+### Breaking changes
+
+- `server` renamed to `relay`
+
+### Added
+
+- Added TLS support for client and agent to connect to server that is behind TLS Proxy (HAProxy).
+  See more in [README.md](README.md#Using-TLS-and-proxy)
+
 ## 0.2.0
 
 ### Breaking changes
 
-- Upgraded the wire protocol to version 4. Servers, agents, and clients must be
+- Upgraded the wire protocol to version 4. Relays, agents, and clients must be
   upgraded together; peers of protocol versions below 4 are not compatible.
 - Replaced the per-agent public data-port range with one shared TCP relay port.
   `N_T_SERVER_PORTS_FROM` and `N_T_SERVER_PORTS_TO` were removed; deployments

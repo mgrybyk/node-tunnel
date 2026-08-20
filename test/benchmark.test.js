@@ -70,7 +70,7 @@ test('tiny benchmark validates a sustained real tunnel session', { timeout: 30_0
   assert.ok(Number.isFinite(report.metrics.rttP99Ms))
   assert.deepEqual(
     Object.fromEntries(Object.entries(report.components).map(([category, value]) => [category, value.processes])),
-    { server: 1, agents: 1, clients: 1, loadWorkers: 1, targetWorkers: 1 }
+    { relay: 1, agents: 1, clients: 1, loadWorkers: 1, targetWorkers: 1 }
   )
 })
 
@@ -96,5 +96,5 @@ test('short resilience benchmark reconnects after a relay outage', { timeout: 30
   assert.ok(report.summary.disconnects >= 1)
   assert.ok(report.summary.reconnections >= 1)
   assert.equal(report.summary.integrityErrors, 0)
-  assert.equal(report.components.server.processes, 2)
+  assert.equal(report.components.relay.processes, 2)
 })

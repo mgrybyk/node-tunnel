@@ -8,7 +8,7 @@ const { spawnSync } = require('node:child_process')
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
 const { writeMessage, createMessageDecoder, createFirstMessageDecoder, readPort } = require('../utils')
-const { getServerConfig } = require('../config')
+const { getRelayConfig } = require('../config')
 
 test('control decoder handles fragmented and coalesced frames', () => {
   const encoded = []
@@ -93,8 +93,8 @@ test('port configuration rejects invalid values', () => {
   delete process.env.N_T_TEST_PORT
 })
 
-test('server configuration exposes only the shared relay port', () => {
-  const config = getServerConfig({ N_T_SERVER_PORT: '3006' })
+test('relay configuration exposes only the shared relay port', () => {
+  const config = getRelayConfig({ N_T_RELAY_PORT: '3006' })
   assert.equal(config.servicePort, 3006)
   assert.equal('portsFrom' in config, false)
   assert.equal('portsTo' in config, false)

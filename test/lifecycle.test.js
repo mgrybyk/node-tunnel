@@ -8,7 +8,7 @@ const { setTimeout: delay } = require('node:timers/promises')
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 process.env.N_T_LOG_ERROR = 'true'
 
-const { createServer } = require('../server')
+const { createRelay } = require('../relay')
 const { createAgent } = require('../agent')
 const { createClient } = require('../client')
 const { TCP_KEEP_ALIVE_INITIAL_DELAY, enableSocketKeepAlive, createBackoff } = require('../lifecycle')
@@ -24,7 +24,7 @@ const {
 } = require('../test-support/helpers')
 
 test('application modules expose lifecycle factories without starting on import', () => {
-  assert.equal(typeof createServer, 'function')
+  assert.equal(typeof createRelay, 'function')
   assert.equal(typeof createAgent, 'function')
   assert.equal(typeof createClient, 'function')
 })
@@ -61,11 +61,11 @@ test('TCP keepalive uses a short initial idle delay', () => {
   assert.equal(TCP_KEEP_ALIVE_INITIAL_DELAY, 30_000)
 })
 
-test('server and client reject occupied listener ports without leaking handles', async t => {
+test('relay and client reject occupied listener ports without leaking handles', async t => {
   silenceInfoLogs(t)
   const serviceBlocker = net.createServer()
   await listenOnAllInterfaces(serviceBlocker)
-  const server = createServer({
+  const relay = createRelay({
     servicePort: serviceBlocker.address().port,
     handshakeTimeout: 500,
     controlIdleTimeout: 5_000,
@@ -83,11 +83,11 @@ test('server and client reject occupied listener ports without leaking handles',
   )
 
   t.after(async () => {
-    await Promise.all([server.close({ force: true }), client.close({ force: true })])
+    await Promise.all([relay.close({ force: true }), client.close({ force: true })])
     await closeServer(serviceBlocker)
   })
 
-  await assert.rejects(server.start(), error => error.code === 'EADDRINUSE')
+  await assert.rejects(relay.start(), error => error.code === 'EADDRINUSE')
   await assert.rejects(client.start(), error => error.code === 'EADDRINUSE')
 })
 
@@ -104,7 +104,7 @@ test('graceful close drains an active stream through all three applications', { 
   await listen(backend)
 
   const ports = await reserveTopologyPorts(1)
-  const server = createServer(serverConfig(ports))
+  const relay = createRelay(serverConfig(ports))
   const agent = createAgent(
     peerConfig(ports, {
       name: 'graceful-close',
@@ -120,11 +120,11 @@ test('graceful close drains an active stream through all three applications', { 
   )
 
   t.after(async () => {
-    await Promise.all([client.close({ force: true }), agent.close({ force: true }), server.close({ force: true })])
+    await Promise.all([client.close({ force: true }), agent.close({ force: true }), relay.close({ force: true })])
     await closeServer(backend)
   })
 
-  await server.start()
+  await relay.start()
   await agent.start()
   await client.start()
   await waitForCondition(() => client.getState().ready, 5_000)
@@ -132,14 +132,14 @@ test('graceful close drains an active stream through all three applications', { 
   const responsePromise = requestTunnel(ports.clients[0], payload)
   await requestReceived
 
-  const closePromise = Promise.all([client.close(), agent.close(), server.close()])
+  const closePromise = Promise.all([client.close(), agent.close(), relay.close()])
   const response = await responsePromise
   await closePromise
 
   assert.deepEqual(response, payload)
   assert.equal(client.getState().dataConnections, 0)
   assert.equal(agent.getState().dataConnections, 0)
-  assert.equal(server.getState().dataSockets, 0)
+  assert.equal(relay.getState().dataSockets, 0)
 })
 
 test('shutdown deadline force-closes a stream that does not drain', { timeout: 10_000 }, async t => {
@@ -152,7 +152,7 @@ test('shutdown deadline force-closes a stream that does not drain', { timeout: 1
   await listen(backend)
 
   const ports = await reserveTopologyPorts(1)
-  const server = createServer(serverConfig(ports))
+  const relay = createRelay(serverConfig(ports))
   const agent = createAgent(
     peerConfig(ports, {
       name: 'forced-close',
@@ -169,11 +169,11 @@ test('shutdown deadline force-closes a stream that does not drain', { timeout: 1
   )
 
   t.after(async () => {
-    await Promise.all([client.close({ force: true }), agent.close({ force: true }), server.close({ force: true })])
+    await Promise.all([client.close({ force: true }), agent.close({ force: true }), relay.close({ force: true })])
     await closeServer(backend)
   })
 
-  await server.start()
+  await relay.start()
   await agent.start()
   await client.start()
   await waitForCondition(() => client.getState().ready)
@@ -205,7 +205,7 @@ test('a paired stream remains open beyond the handshake timeout', { timeout: 10_
 
   const ports = await reserveTopologyPorts(1)
   const handshakeTimeout = 100
-  const server = createServer({ ...serverConfig(ports), handshakeTimeout })
+  const relay = createRelay({ ...serverConfig(ports), handshakeTimeout })
   const agent = createAgent(
     peerConfig(ports, {
       name: 'long-lived-stream',
@@ -225,11 +225,11 @@ test('a paired stream remains open beyond the handshake timeout', { timeout: 10_
 
   t.after(async () => {
     localSocket?.destroy()
-    await Promise.all([client.close({ force: true }), agent.close({ force: true }), server.close({ force: true })])
+    await Promise.all([client.close({ force: true }), agent.close({ force: true }), relay.close({ force: true })])
     await closeServer(backend)
   })
 
-  await server.start()
+  await relay.start()
   await agent.start()
   await client.start()
   await waitForCondition(() => client.getState().ready)
@@ -244,17 +244,17 @@ test('a paired stream remains open beyond the handshake timeout', { timeout: 10_
   await delay(3 * handshakeTimeout)
 
   assert.equal(localSocket.destroyed, false)
-  assert.equal(server.getState().dataSockets, 2)
+  assert.equal(relay.getState().dataSockets, 2)
   assert.equal(agent.getState().dataConnections, 1)
   assert.equal(client.getState().dataConnections, 1)
 })
 
-test('server removes empty connection-name state after client churn', { timeout: 10_000 }, async t => {
+test('relay removes empty connection-name state after client churn', { timeout: 10_000 }, async t => {
   silenceInfoLogs(t)
   const ports = await reserveTopologyPorts(0)
-  const server = createServer(serverConfig(ports))
-  t.after(() => server.close({ force: true }))
-  await server.start()
+  const relay = createRelay(serverConfig(ports))
+  t.after(() => relay.close({ force: true }))
+  await relay.start()
 
   await Promise.all(
     Array.from({ length: 40 }, (_, index) => {
@@ -262,37 +262,37 @@ test('server removes empty connection-name state after client churn', { timeout:
     })
   )
 
-  await waitForCondition(() => server.getState().connectionNames === 0, 3_000)
-  assert.equal(server.getState().connectionNames, 0)
-  assert.equal(server.getState().serviceSockets, 0)
+  await waitForCondition(() => relay.getState().connectionNames === 0, 3_000)
+  assert.equal(relay.getState().connectionNames, 0)
+  assert.equal(relay.getState().serviceSockets, 0)
 })
 
-test('server repeatedly removes agent route state without creating data listeners', { timeout: 15_000 }, async t => {
+test('relay repeatedly removes agent route state without creating data listeners', { timeout: 15_000 }, async t => {
   silenceInfoLogs(t)
   const ports = await reserveTopologyPorts(0)
-  const server = createServer(serverConfig(ports))
+  const relay = createRelay(serverConfig(ports))
   const fatalErrors = []
-  server.on('fatal', error => fatalErrors.push(error))
-  t.after(() => server.close({ force: true }))
-  await server.start()
+  relay.on('fatal', error => fatalErrors.push(error))
+  t.after(() => relay.close({ force: true }))
+  await relay.start()
 
   for (let index = 0; index < 30; index++) {
     const agent = await registerControl(ports.service, TYPES.AGENT, `route-churn-${index}`)
     await agent.messages.next()
     agent.socket.end()
     await waitForSocketClose(agent.socket)
-    await waitForCondition(() => server.getState().connectionNames === 0)
+    await waitForCondition(() => relay.getState().connectionNames === 0)
   }
 
   assert.deepEqual(fatalErrors, [])
-  assert.equal(server.getState().serviceSockets, 0)
-  assert.equal(server.getState().dataSockets, 0)
+  assert.equal(relay.getState().serviceSockets, 0)
+  assert.equal(relay.getState().dataSockets, 0)
 })
 
-test('server expires a valid data socket that waits too long for its peer', { timeout: 5_000 }, async t => {
+test('relay expires a valid data socket that waits too long for its peer', { timeout: 5_000 }, async t => {
   silenceInfoLogs(t)
   const ports = await reserveTopologyPorts(0)
-  const server = createServer({ ...serverConfig(ports), handshakeTimeout: 250 })
+  const relay = createRelay({ ...serverConfig(ports), handshakeTimeout: 250 })
   let agent
   let client
   let dataSocket
@@ -301,10 +301,10 @@ test('server expires a valid data socket that waits too long for its peer', { ti
     dataSocket?.destroy()
     agent?.socket.destroy()
     client?.socket.destroy()
-    await server.close({ force: true })
+    await relay.close({ force: true })
   })
 
-  await server.start()
+  await relay.start()
   agent = await registerControl(ports.service, TYPES.AGENT, 'unmatched-data-socket')
   client = await registerControl(ports.service, TYPES.CLIENT, 'unmatched-data-socket')
   await Promise.all([agent.messages.next(), client.messages.next()])
@@ -329,10 +329,10 @@ test('server expires a valid data socket that waits too long for its peer', { ti
     })
   )
 
-  await waitForCondition(() => server.getState().dataSockets === 1 && server.getState().pendingTunnels === 1)
+  await waitForCondition(() => relay.getState().dataSockets === 1 && relay.getState().pendingTunnels === 1)
   await waitForSocketClose(dataSocket, 2_000)
-  await waitForCondition(() => server.getState().dataSockets === 0)
-  assert.equal(server.getState().serviceSockets, 2)
+  await waitForCondition(() => relay.getState().dataSockets === 0)
+  assert.equal(relay.getState().serviceSockets, 2)
 })
 
 function serverConfig(ports) {
@@ -346,8 +346,8 @@ function serverConfig(ports) {
 
 function peerConfig(ports, roleConfig) {
   return {
-    serverHost: host,
-    serverPort: ports.service,
+    relayHost: host,
+    relayPort: ports.service,
     reconnectDelay: 100,
     reconnectMaxDelay: 400,
     reconnectJitterPercent: 0,

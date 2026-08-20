@@ -1,10 +1,10 @@
 {
   "name": "node-tunnel",
-  "version": "0.2.0",
-  "description": "Expose TCP services behind NAT through a public relay server",
-  "main": "server.js",
+  "version": "0.5.0",
+  "description": "Expose TCP services behind NAT through a relay on public a host",
+  "main": "relay.js",
   "exports": {
-    ".": "./server.js",
+    ".": "./relay.js",
     "./agent": "./agent.js",
     "./client": "./client.js",
     "./config": "./config.js",
@@ -18,15 +18,15 @@
     "lifecycle.js",
     "peer-session.js",
     "protocol.js",
-    "server.js",
+    "relay.js",
     "tcp-data-transport.js",
     "utils.js",
     "benchmark",
     "example.env",
-    "ARCHITECTURE.md",
-    "BENCHMARK.md",
     "README.md",
-    "SECURITY.md",
+    "docs/ARCHITECTURE.md",
+    "docs/BENCHMARK.md",
+    "docs/SECURITY.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
@@ -38,7 +38,7 @@
     "c8": "^12.0.0"
   },
   "scripts": {
-    "server": "node server.js",
+    "relay": "node relay.js",
     "agent": "node agent.js",
     "client": "node client.js",
     "check": "biome check .",

@@ -7,7 +7,7 @@ const { setTimeout: delay } = require('node:timers/promises')
 
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
-const { createServer } = require('../server')
+const { createRelay } = require('../relay')
 const { PROTOCOL_VERSION, TYPES, CONNECTION_KINDS } = require('../protocol')
 const { crypt, writeMessage, createMessageDecoder, createFirstMessageDecoder, log } = require('../utils')
 const { host, reservePort, closeServer, waitForSocketClose } = require('../test-support/helpers')
@@ -17,7 +17,7 @@ test('one relay port pairs ticketed data sockets, preserves preface remainders, 
   const reservation = await reservePort()
   const port = reservation.port
   await closeServer(reservation.server)
-  const server = createServer({
+  const relay = createRelay({
     servicePort: port,
     handshakeTimeout: 500,
     controlIdleTimeout: 5_000,
@@ -27,10 +27,10 @@ test('one relay port pairs ticketed data sockets, preserves preface remainders, 
 
   t.after(async () => {
     for (const socket of sockets) socket.destroy()
-    await server.close({ force: true })
+    await relay.close({ force: true })
   })
 
-  await server.start()
+  await relay.start()
   const agent = await connectControl(port, TYPES.AGENT, 'single-port-route')
   const client = await connectControl(port, TYPES.CLIENT, 'single-port-route')
   sockets.push(agent.socket, client.socket)

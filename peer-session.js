@@ -1,6 +1,6 @@
 'use strict'
 
-const net = require('node:net')
+const { connectToRelay } = require('./relay-connection')
 const { PROTOCOL_VERSION, CONNECTION_KINDS } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createMessageDecoder } = require('./utils')
 const { enableSocketKeepAlive, createBackoff, destroySockets } = require('./lifecycle')
@@ -37,7 +37,23 @@ function createPeerSession({
   function connect() {
     if (stopping || fatalError) return
 
-    const nextSocket = new net.Socket()
+    const nextSocket = connectToRelay(config, {}, () => {
+      enableSocketKeepAlive(nextSocket)
+      connected = true
+      connectionLossReported = false
+      const message = {
+        protocolVersion: PROTOCOL_VERSION,
+        kind: CONNECTION_KINDS.CONTROL,
+        type,
+        name
+      }
+      const uuid = getUuid()
+      if (uuid) message.uuid = uuid
+      writeMessage(nextSocket, JSON.stringify(message))
+      startPinger(nextSocket)
+      onConnected()
+    })
+
     const decodeMessage = createMessageDecoder(
       data => handleMessage(nextSocket, data),
       () => nextSocket.destroy()
@@ -45,17 +61,6 @@ function createPeerSession({
     socket = nextSocket
 
     nextSocket.on('data', decodeMessage)
-    nextSocket.on('connect', () => {
-      enableSocketKeepAlive(nextSocket)
-      connected = true
-      connectionLossReported = false
-      const message = { protocolVersion: PROTOCOL_VERSION, kind: CONNECTION_KINDS.CONTROL, type, name }
-      const uuid = getUuid()
-      if (uuid) message.uuid = uuid
-      writeMessage(nextSocket, JSON.stringify(message))
-      startPinger(nextSocket)
-      onConnected()
-    })
     nextSocket.on('error', error => log.err(errorLabel, error.name || error.code, error.message))
     nextSocket.on('close', () => {
       nextSocket.removeListener('data', decodeMessage)
@@ -70,7 +75,6 @@ function createPeerSession({
       }
       if (!stopping && !fatalError) connectWithDelay(backoff.next())
     })
-    nextSocket.connect(config.serverPort, config.serverHost)
   }
 
   function handleMessage(messageSocket, data) {
@@ -78,7 +82,7 @@ function createPeerSession({
     if (!message || typeof message !== 'object') return messageSocket.destroy()
     if (message.protocolVersion !== PROTOCOL_VERSION) {
       return fail(
-        `protocol version mismatch: ${type}=${PROTOCOL_VERSION}, server=${message.protocolVersion ?? 'unknown'}`
+        `protocol version mismatch: ${type}=${PROTOCOL_VERSION}, relay=${message.protocolVersion ?? 'unknown'}`
       )
     }
 

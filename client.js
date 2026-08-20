@@ -2,6 +2,7 @@
 
 const { EventEmitter } = require('node:events')
 const net = require('node:net')
+const { connectToRelay } = require('./relay-connection')
 const { randomUUID } = require('node:crypto')
 const { loadEnvironment, getClientConfig } = require('./config')
 
@@ -19,6 +20,7 @@ function createClient(config = getClientConfig()) {
   const dataConnections = new Set()
   const pendingLocalConnections = new Map()
 
+  /** @type {net.Server} */
   let localServer
   let serviceUuid
   let started = false
@@ -32,10 +34,10 @@ function createClient(config = getClientConfig()) {
     getUuid: () => serviceUuid,
     onConnected() {
       ready = false
-      log.info('Connection to server established, waiting for agent.')
+      log.info('Connection to relay established, waiting for agent.')
     },
     onDisconnected() {
-      if (!stopping) log.info('Connection to server lost')
+      if (!stopping) log.info('Connection to relay lost')
       ready = false
       closePendingLocalConnections()
     },
@@ -61,22 +63,26 @@ function createClient(config = getClientConfig()) {
         localServer.off('error', onStartupError)
         localServer.on('error', onRuntimeError)
         started = true
-        log.info(`Client listening on port ${config.localPort}. Connecting to server...`)
+        log.info(`Client listening on ${config.localHost}:${config.localPort}. Connecting to relay...`)
         controlSession.start()
         resolve()
       }
 
       localServer.once('error', onStartupError)
       localServer.once('listening', onListening)
-      localServer.listen(config.localPort)
+      localServer.listen(config.localPort, config.localHost)
     })
   }
 
   function onRuntimeError(error) {
-    log.info('Something went wrong with client server. Stopping...\n', error.name || error.code, error.message)
+    log.info('Something went wrong with client relay. Stopping...\n', error.name || error.code, error.message)
     controlSession.fail(error)
   }
 
+  /**
+   * @param {net.Socket} localSocket
+   * @returns {net.Socket|undefined}
+   */
   function handleLocalSocket(localSocket) {
     if (!ready || stopping) return localSocket.destroy()
 
@@ -110,11 +116,7 @@ function createClient(config = getClientConfig()) {
       return localSocket.destroy()
     }
 
-    const dataClient = new net.Socket({ allowHalfOpen: true })
-    let bridge
-    dataConnections.add(dataClient)
-    dataClient.setTimeout(config.handshakeTimeout, () => dataClient.destroy())
-    dataClient.on('connect', () => {
+    const dataClient = connectToRelay(config, { allowHalfOpen: true }, () => {
       enableSocketKeepAlive(dataClient)
       writeMessage(
         dataClient,
@@ -126,6 +128,9 @@ function createClient(config = getClientConfig()) {
         })
       )
     })
+    let bridge
+    dataConnections.add(dataClient)
+    dataClient.setTimeout(config.handshakeTimeout, () => dataClient.destroy())
 
     const decodeReady = createFirstMessageDecoder(
       (message, remainder) => {
@@ -162,8 +167,6 @@ function createClient(config = getClientConfig()) {
         else if (!dataClient.writableEnded) dataClient.end()
       }
     })
-
-    dataClient.connect(config.serverPort, config.serverHost)
   }
 
   function onMessage(message, controls) {

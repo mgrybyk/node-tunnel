@@ -39,15 +39,15 @@ test('client becomes usable when its agent connects later', { timeout: 20_000 },
     const ports = await reserveTopologyPorts(1)
     const env = topologyEnv(ports)
 
-    const server = startChild('server', 'server.js', env)
+    const relay = startChild('relay', 'relay.js', env)
     const client = startChild('client', 'client.js', {
       ...env,
       N_T_CLIENT_NAME: 'late-agent',
       N_T_CLIENT_PORT: String(ports.clients[0])
     })
-    children.push(server, client)
+    children.push(relay, client)
 
-    await waitForListening(server, ports.service)
+    await waitForListening(relay, ports.service)
     await waitForOutput(client, 'waiting for agent')
     await expectConnectionToClose(ports.clients[0])
 
@@ -67,7 +67,7 @@ test('client becomes usable when its agent connects later', { timeout: 20_000 },
   }
 })
 
-test('agent and client recover after repeated server restarts', { timeout: 30_000 }, async t => {
+test('agent and client recover after repeated relay restarts', { timeout: 30_000 }, async t => {
   const children = []
   const servers = []
   registerCleanup(t, children, servers)
@@ -79,7 +79,7 @@ test('agent and client recover after repeated server restarts', { timeout: 30_00
     const ports = await reserveTopologyPorts(1)
     const env = topologyEnv(ports)
 
-    let currentServer = startChild('server-before-restart', 'server.js', env)
+    let currentServer = startChild('relay-before-restart', 'relay.js', env)
     const agent = startChild('agent', 'agent.js', {
       ...env,
       N_T_AGENT_NAME: 'restart-agent',
@@ -99,11 +99,11 @@ test('agent and client recover after repeated server restarts', { timeout: 30_00
     for (let restart = 1; restart <= 3; restart++) {
       await stopChild(currentServer)
       await Promise.all([
-        waitForOutputCount(agent, 'Connection to server lost', restart),
-        waitForOutputCount(client, 'Connection to server lost', restart)
+        waitForOutputCount(agent, 'Connection to relay lost', restart),
+        waitForOutputCount(client, 'Connection to relay lost', restart)
       ])
 
-      currentServer = startChild(`server-after-restart-${restart}`, 'server.js', env)
+      currentServer = startChild(`relay-after-restart-${restart}`, 'relay.js', env)
       children.push(currentServer)
       await waitForOutput(currentServer, 'Agent "restart-agent" connected on shared relay port')
       await waitForOutputCount(client, 'Agent found, ready!', restart + 1)
@@ -127,7 +127,7 @@ test('connection resets and a slow reader do not poison later streams', { timeou
     const ports = await reserveTopologyPorts(1)
     const env = topologyEnv(ports)
 
-    const server = startChild('server', 'server.js', env)
+    const relay = startChild('relay', 'relay.js', env)
     const agent = startChild('agent', 'agent.js', {
       ...env,
       N_T_AGENT_NAME: 'reset-agent',
@@ -139,7 +139,7 @@ test('connection resets and a slow reader do not poison later streams', { timeou
       N_T_CLIENT_NAME: 'reset-agent',
       N_T_CLIENT_PORT: String(ports.clients[0])
     })
-    children.push(server, agent, client)
+    children.push(relay, agent, client)
 
     await waitForOutput(client, 'Agent found, ready!')
     await Promise.all(
@@ -169,7 +169,7 @@ test('unavailable agent target closes the client stream without hanging', { time
     const ports = await reserveTopologyPorts(1)
     const env = topologyEnv(ports)
 
-    const server = startChild('server', 'server.js', env)
+    const relay = startChild('relay', 'relay.js', env)
     const agent = startChild('agent', 'agent.js', {
       ...env,
       N_T_AGENT_NAME: 'unavailable-target',
@@ -181,7 +181,7 @@ test('unavailable agent target closes the client stream without hanging', { time
       N_T_CLIENT_NAME: 'unavailable-target',
       N_T_CLIENT_PORT: String(ports.clients[0])
     })
-    children.push(server, agent, client)
+    children.push(relay, agent, client)
 
     await waitForOutput(client, 'Agent found, ready!')
     await expectConnectionToClose(ports.clients[0], Buffer.from('cannot be delivered'))
@@ -198,14 +198,14 @@ test('duplicate agents terminate rejected agents', { timeout: 20_000 }, async t 
   try {
     const ports = await reserveTopologyPorts(0)
     const env = topologyEnv(ports)
-    const server = startChild('server', 'server.js', env)
+    const relay = startChild('relay', 'relay.js', env)
     const firstAgent = startChild('first-agent', 'agent.js', {
       ...env,
       N_T_AGENT_NAME: 'occupied-name'
     })
-    children.push(server, firstAgent)
+    children.push(relay, firstAgent)
 
-    await waitForOutput(server, 'Agent "occupied-name" connected on shared relay port')
+    await waitForOutput(relay, 'Agent "occupied-name" connected on shared relay port')
 
     const duplicateAgent = startChild('duplicate-agent', 'agent.js', {
       ...env,
@@ -221,16 +221,16 @@ test('duplicate agents terminate rejected agents', { timeout: 20_000 }, async t 
   }
 })
 
-test('server rejects mismatched and legacy protocol handshakes', { timeout: 15_000 }, async t => {
+test('relay rejects mismatched and legacy protocol handshakes', { timeout: 15_000 }, async t => {
   const children = []
   registerCleanup(t, children, [])
 
   try {
     const ports = await reserveTopologyPorts(0)
     const env = topologyEnv(ports)
-    const server = startChild('server', 'server.js', env)
-    children.push(server)
-    await waitForListening(server, ports.service)
+    const relay = startChild('relay', 'relay.js', env)
+    children.push(relay)
+    await waitForListening(relay, ports.service)
 
     const mismatch = await sendControlMessage(ports.service, {
       protocolVersion: PROTOCOL_VERSION + 1,
@@ -252,7 +252,7 @@ test('server rejects mismatched and legacy protocol handshakes', { timeout: 15_0
   }
 })
 
-test('agent and client exit when a server reports another protocol version', { timeout: 15_000 }, async t => {
+test('agent and client exit when a relay reports another protocol version', { timeout: 15_000 }, async t => {
   const children = []
   const servers = []
   registerCleanup(t, children, servers)
@@ -273,8 +273,8 @@ test('agent and client exit when a server reports another protocol version', { t
 
     const commonEnv = {
       N_T_CRYPT_KEY: cryptKey,
-      N_T_SERVER_HOST: host,
-      N_T_SERVER_PORT: String(fakeServer.address().port),
+      N_T_RELAY_HOST: host,
+      N_T_RELAY_PORT: String(fakeServer.address().port),
       N_T_RECONNECT_DELAY_MS: '100'
     }
     const agent = startChild('version-mismatch-agent', 'agent.js', {
@@ -309,8 +309,8 @@ function topologyEnv(ports) {
     N_T_CRYPT_KEY: cryptKey,
     N_T_LOG_DEBUG: 'false',
     N_T_LOG_ERROR: 'true',
-    N_T_SERVER_HOST: host,
-    N_T_SERVER_PORT: String(ports.service),
+    N_T_RELAY_HOST: host,
+    N_T_RELAY_PORT: String(ports.service),
     N_T_RECONNECT_DELAY_MS: '200',
     N_T_HANDSHAKE_TIMEOUT_MS: '300',
     N_T_CONTROL_IDLE_TIMEOUT_MS: '5000'
@@ -402,7 +402,7 @@ function sendControlMessage(port, message) {
           finish(error)
         }
       },
-      () => finish(new Error('server returned an invalid control frame'))
+      () => finish(new Error('relay returned an invalid control frame'))
     )
 
     socket.on('connect', () => writeMessage(socket, JSON.stringify(message)))

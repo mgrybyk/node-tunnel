@@ -2,7 +2,7 @@
 
 const role = process.argv[2]
 const factories = {
-  server: () => require('../server').createServer,
+  relay: () => require('../relay').createRelay,
   agent: () => require('../agent').createAgent,
   client: () => require('../client').createClient
 }
