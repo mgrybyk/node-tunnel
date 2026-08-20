@@ -195,47 +195,21 @@ function formatChildLogs(children) {
     .join('\n')
 }
 
-async function reserveTopologyPorts(dataPortsCount, clientsCount) {
-  const dataReservation = await reservePortRange(dataPortsCount)
-  const otherReservations = []
+async function reserveTopologyPorts(clientsCount) {
+  const reservations = []
 
   try {
     for (let index = 0; index < 1 + clientsCount; index++) {
-      otherReservations.push(await reservePort())
+      reservations.push(await reservePort())
     }
 
     return {
-      service: otherReservations[0].port,
-      dataFrom: dataReservation.base,
-      dataTo: dataReservation.base + dataPortsCount - 1,
-      clients: otherReservations.slice(1).map(reservation => reservation.port)
+      service: reservations[0].port,
+      clients: reservations.slice(1).map(reservation => reservation.port)
     }
   } finally {
-    await Promise.all([
-      ...dataReservation.servers.map(closeServer),
-      ...otherReservations.map(reservation => closeServer(reservation.server))
-    ])
+    await Promise.all(reservations.map(reservation => closeServer(reservation.server)))
   }
-}
-
-async function reservePortRange(count) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const base = 20_000 + Math.floor(Math.random() * (35_000 - count))
-    const servers = []
-
-    try {
-      for (let offset = 0; offset < count; offset++) {
-        const server = net.createServer()
-        await listen(server, base + offset)
-        servers.push(server)
-      }
-      return { base, servers }
-    } catch (_error) {
-      await Promise.all(servers.map(closeServer))
-    }
-  }
-
-  throw new Error(`could not reserve ${count} consecutive ports`)
 }
 
 async function reservePort() {

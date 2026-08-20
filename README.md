@@ -11,13 +11,13 @@
 
 </div>
 
-`node-tunnel` is a small, self-hosted reverse TCP tunnel. Run a server on a
+`node-tunnel` is a small, self-hosted reverse TCP tunnel. Run a relay on a
 public host, an agent beside the private service, and a client wherever you
 want to use it. SSH, RDP, databases, HTTP, and other TCP protocols all work
 through the same three-process setup.
 
 - **Self-hosted** — the relay runs on infrastructure you control.
-- **NAT-friendly** — the agent and client connect out to the public server.
+- **NAT-friendly** — the agent and client connect out to the public relay.
 - **Dependency-free at runtime** — built entirely on Node.js core modules.
 - **Resilient** — reconnect backoff, TCP keepalive, and graceful shutdown are
   built in.
@@ -25,12 +25,12 @@ through the same three-process setup.
 ## How it works
 
 The agent on device 1 and the client on device 2 both connect outward to the
-public relay. The client exposes `localhost:8000`, which is routed through the
+public relay. The client exposes `127.0.0.1:8000`, which is routed through the
 relay to `localhost:22` on device 1.
 
-![SSH routed from the client on device 2 through the public server to the agent on device 1](tunnel-flow.png)
+![SSH routed from the client on device 2 through the public relay to the agent on device 1](docs/tunnel-flow.png)
 
-## Quick start: tunnel SSH
+## Quick start tunnel SSH
 
 You need Node.js 24 or newer on all three hosts. Clone and install the project
 on each one:
@@ -47,22 +47,20 @@ Generate a private 32-character key once, then use the result in every config:
 openssl rand -hex 16
 ```
 
-### 1. Start the server in the cloud
+### 1. Start the relay
 
-Create `server.env` on the public host:
+Create `relay.env` on the public host:
 
 ```dotenv
 N_T_CRYPT_KEY=<same-32-character-key>
-N_T_SERVER_PORT=32121
-N_T_SERVER_PORTS_FROM=32131
-N_T_SERVER_PORTS_TO=32141
+N_T_RELAY_BIND_HOST=0.0.0.0 # change to 127.0.0.1 if the relay is behind a proxy
+N_T_RELAY_PORT=32121
 ```
 
-Allow inbound TCP traffic to the control port (`32121`) and the full data-port
-range (`32131–32141`), then start the relay:
+Allow inbound TCP traffic to the relay port (`32121`), then start the relay:
 
 ```sh
-npm run start:server -- server.env
+npm run relay -- relay.env
 ```
 
 ### 2. Start the agent on device 1
@@ -71,16 +69,16 @@ Create `agent.env` beside the private SSH service:
 
 ```dotenv
 N_T_CRYPT_KEY=<same-32-character-key>
-N_T_SERVER_HOST=relay.example.com
-N_T_SERVER_PORT=32121
+N_T_RELAY_HOST=relay.example.com
+N_T_RELAY_PORT=32121
 
 N_T_AGENT_NAME=my-ssh
-N_T_AGENT_DATA_HOST=localhost
+N_T_AGENT_DATA_HOST=127.0.0.1
 N_T_AGENT_DATA_PORT=22
 ```
 
 ```sh
-npm run start:agent -- agent.env
+npm run agent -- agent.env
 ```
 
 The target can also be another host reachable from device 1; set
@@ -92,38 +90,41 @@ Create `client.env` where you want the local SSH entry point:
 
 ```dotenv
 N_T_CRYPT_KEY=<same-32-character-key>
-N_T_SERVER_HOST=relay.example.com
-N_T_SERVER_PORT=32121
+N_T_RELAY_HOST=relay.example.com
+N_T_RELAY_PORT=32121
 
 N_T_CLIENT_NAME=my-ssh
+N_T_CLIENT_BIND_HOST=127.0.0.1 # change to 0.0.0.0 if you want other clients in your network to access the client port
 N_T_CLIENT_PORT=8000
 ```
 
 ```sh
-npm run start:client -- client.env
+npm run client -- client.env
 ```
 
 The client and agent names must match. Now connect on device 2:
 
 ```sh
-ssh user@localhost -p 8000
+ssh user@127.0.0.1 -p 8000
 ```
 
-If your SSH config names that local endpoint `server`, the equivalent command
-is `ssh server -p 8000`.
 
 The same pattern works for any TCP service: change the agent target port, the
 client's local port, and the route name.
 
+### Using TLS and proxy
+
+Add to all agents and clients:
+
+```dotenv
+N_T_USE_TLS=true
+```
+
+You have to generate certificates for your domain and use a TLS proxy. For example HAProxy. See HAProxy [haproxy.cfg](docs/haproxy.cfg) example.
+
 ## Deployment notes
 
-- One server can host multiple named routes. Each route uses one port from the
-  server's data-port range and accepts one agent plus multiple clients.
-- Route names select a target; they are not credentials. Anyone with the shared
-  key belongs to the same trust domain and must be trusted with every route.
-- The client listener does not explicitly bind to loopback. Use host firewall
-  rules to prevent unwanted access to `N_T_CLIENT_PORT` from other machines.
-- Server, agent, and client must use the same protocol version. Incompatible
+- Relay, agent, and client must use the same protocol version. Incompatible
   peers log an error and exit.
 
 <details>
@@ -150,16 +151,16 @@ allow active streams a bounded drain period, and then close remaining sockets.
 Imports have no side effects. Each entry point exposes a lifecycle factory:
 
 ```js
-const { createServer } = require('node-tunnel')
+const { createRelay } = require('node-tunnel')
 
-const server = createServer(options)
-await server.start()
-await server.close()
+const relay = createRelay(options)
+await relay.start()
+await relay.close()
 ```
 
 | Entry point | Export |
 | --- | --- |
-| `node-tunnel` | `createServer` |
+| `node-tunnel` | `createRelay` |
 | `node-tunnel/agent` | `createAgent` |
 | `node-tunnel/client` | `createClient` |
 | `node-tunnel/config` | Environment-backed config builders |
@@ -167,17 +168,16 @@ await server.close()
 ## Security
 
 > [!WARNING]
-> Tunnel payloads pass through the public server as plaintext. Control and
-> data-handshake messages are authenticated and encrypted, but application
-> traffic is not. Use an end-to-end encrypted protocol such as SSH or TLS for
-> sensitive traffic. See [Security](#security) for the complete trust model.
+> TLS protects traffic to the public relay, but it is not end-to-end encryption.
+> See [Security](docs/SECURITY.md).
 
-This project is still a prototype and should not be exposed to untrusted
-networks without additional protection. [SECURITY.md](SECURITY.md) documents
-the plaintext payload path, shared-key trust domain, replay limitation, client
-listener exposure, and deferred denial-of-service hardening.
+This project is still a prototype. Use TLS and appropriate network hardening
+when exposing it to untrusted networks.
 
 ## Development
+
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for module responsibilities, connection
+flow, lifecycle ownership, and the transport boundary.
 
 ```sh
 npm run check
@@ -185,10 +185,15 @@ npm test
 npm run test:coverage
 ```
 
-The end-to-end suite starts a real server, two agents, and six clients. It
+The end-to-end suite starts a real relay, two agents, and six clients. It
 exercises 72 binary streams over three traffic waves, with 24 streams active in
 parallel per wave and roughly 158 MiB transferred. CI runs checks and coverage
 on Ubuntu and Windows.
+
+### Benchmarking
+
+See [BENCHMARK.md](docs/BENCHMARK.md) for the sustained 3-agent/12-client scenario,
+outage preset, JSON reports, failure diagnostics, and comparison format.
 
 For a release, also run `npm pack --dry-run`, update `CHANGELOG.md`, and bump
 `PROTOCOL_VERSION` only when messages, framing, handshakes, or other wire

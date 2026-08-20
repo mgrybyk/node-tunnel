@@ -40,20 +40,18 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
       backends.push(await startBackend(agentIndex))
     }
 
-    const ports = await reserveTopologyPorts(agentsCount, agentsCount * clientsPerAgent)
+    const ports = await reserveTopologyPorts(agentsCount * clientsPerAgent)
     const commonEnv = {
       N_T_CRYPT_KEY: cryptKey,
       N_T_LOG_DEBUG: 'false',
       N_T_LOG_ERROR: 'true',
-      N_T_SERVER_HOST: host,
-      N_T_SERVER_PORT: String(ports.service),
-      N_T_SERVER_PORTS_FROM: String(ports.dataFrom),
-      N_T_SERVER_PORTS_TO: String(ports.dataTo)
+      N_T_RELAY_HOST: host,
+      N_T_RELAY_PORT: String(ports.service)
     }
 
-    const server = startChild('server', 'server.js', commonEnv)
-    children.push(server)
-    await waitForListening(server, ports.service, startupTimeout)
+    const relay = startChild('relay', 'relay.js', commonEnv)
+    children.push(relay)
+    await waitForListening(relay, ports.service, startupTimeout)
 
     for (let agentIndex = 0; agentIndex < agentsCount; agentIndex++) {
       const name = agentName(agentIndex)
@@ -65,7 +63,7 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
       })
 
       children.push(agent)
-      await waitForOutput(server, `Agent "${name}" connected, dedicated port`, startupTimeout)
+      await waitForOutput(relay, `Agent "${name}" connected on shared relay port`, startupTimeout)
     }
 
     const clients = []

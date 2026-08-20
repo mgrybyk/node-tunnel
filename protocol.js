@@ -1,6 +1,11 @@
 'use strict'
 
-const PROTOCOL_VERSION = 2
+const PROTOCOL_VERSION = 5
+
+const CONNECTION_KINDS = Object.freeze({
+  CONTROL: 'control',
+  DATA: 'data'
+})
 
 const TYPES = Object.freeze({
   AGENT: 'agent',
@@ -9,12 +14,14 @@ const TYPES = Object.freeze({
 
 const ERRORS = Object.freeze({
   DUPLICATE_AGENT: 'agent with this name already exists',
-  NO_PORTS: 'no data ports available',
+  TOO_MANY_PENDING_TUNNELS: 'too many pending tunnels',
+  TUNNEL_UNAVAILABLE: 'tunnel is unavailable',
   VERSION_MISMATCH: 'protocol version mismatch'
 })
 
 module.exports = {
   PROTOCOL_VERSION,
+  CONNECTION_KINDS,
   TYPES,
   ERRORS
 }
