@@ -30,7 +30,7 @@ received in the same TCP chunk.
 
 - Node.js 24+, no build step, and no runtime dependencies.
 - CLI processes load `.env` by default or the file in their first argument.
-- Supported variables and defaults are in `.env-example` and `config.js`.
+- Supported variables and defaults are in `example.env` and `config.js`.
 
 Run before handing off changes:
 

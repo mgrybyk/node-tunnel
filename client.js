@@ -7,38 +7,42 @@ const { loadEnvironment, getClientConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
-const { PROTOCOL_VERSION, ERRORS } = require('./protocol')
-const { tryParseJSON, log, writeMessage, createMessageDecoder, createFirstMessageDecoder } = require('./utils')
-const {
-  enableSocketKeepAlive,
-  createBackoff,
-  stopListening,
-  destroySockets,
-  waitForSockets,
-  runCli
-} = require('./lifecycle')
+const { PROTOCOL_VERSION, TYPES } = require('./protocol')
+const { tryParseJSON, log, writeMessage, createFirstMessageDecoder } = require('./utils')
+const { enableSocketKeepAlive, stopListening, destroySockets, waitForSockets, runCli } = require('./lifecycle')
+const { createTcpByteChannel, bridgeByteChannels } = require('./byte-channel')
+const { createPeerSession } = require('./peer-session')
 
 function createClient(config = getClientConfig()) {
   const events = new EventEmitter()
   const localConnections = new Set()
   const dataConnections = new Set()
-  const backoff = createBackoff({
-    baseDelay: config.reconnectDelay,
-    maxDelay: config.reconnectMaxDelay,
-    jitterPercent: config.reconnectJitterPercent
-  })
 
   let localServer
-  let serviceClient
-  let reconnectTimer
-  let pinger
   let dataJson
   let started = false
   let stopping = false
   let closePromise
-  let fatalError = false
   let isDataClient = false
-  let connectionToServerLost = false
+  const controlSession = createPeerSession({
+    config,
+    type: TYPES.CLIENT,
+    name: config.name,
+    getUuid: () => dataJson?.uuid,
+    onConnected() {
+      log.info('Connection to server established, waiting for agent.')
+      if (dataJson) isDataClient = true
+    },
+    onDisconnected() {
+      if (!stopping) log.info('Connection to server lost')
+      isDataClient = false
+    },
+    onMessage,
+    onFatal(error) {
+      events.emit('fatal', error)
+    },
+    errorLabel: 'SERVICE_SOCKET'
+  })
 
   function start() {
     if (started) return Promise.resolve()
@@ -56,7 +60,7 @@ function createClient(config = getClientConfig()) {
         localServer.on('error', onRuntimeError)
         started = true
         log.info(`Client listening on port ${config.localPort}. Connecting to server...`)
-        connect()
+        controlSession.start()
         resolve()
       }
 
@@ -68,7 +72,7 @@ function createClient(config = getClientConfig()) {
 
   function onRuntimeError(error) {
     log.info('Something went wrong with client server. Stopping...\n', error.name || error.code, error.message)
-    stopFatal(error.message)
+    controlSession.fail(error)
   }
 
   function handleLocalSocket(localSocket) {
@@ -77,7 +81,7 @@ function createClient(config = getClientConfig()) {
     enableSocketKeepAlive(localSocket)
     localConnections.add(localSocket)
     const dataClient = new net.Socket({ allowHalfOpen: true })
-    let isPiped = false
+    let bridge
 
     dataClient.uuid = `client-${randomUUID()}`
     dataConnections.add(dataClient)
@@ -88,7 +92,7 @@ function createClient(config = getClientConfig()) {
         dataClient,
         JSON.stringify({
           protocolVersion: PROTOCOL_VERSION,
-          type: 'client',
+          type: TYPES.CLIENT,
           uuid: dataClient.uuid
         })
       )
@@ -102,10 +106,10 @@ function createClient(config = getClientConfig()) {
         }
 
         dataClient.removeListener('data', decodeReady)
-        dataClient.setTimeout(0)
-        dataClient.pipe(localSocket).pipe(dataClient)
-        isPiped = true
-        if (remainder.length > 0) localSocket.write(remainder)
+        bridge = bridgeByteChannels(
+          createTcpByteChannel(dataClient, { initialData: remainder }),
+          createTcpByteChannel(localSocket)
+        )
         localSocket.resume()
       },
       () => dataClient.destroy()
@@ -117,7 +121,7 @@ function createClient(config = getClientConfig()) {
       dataClient.removeListener('data', decodeReady)
       dataConnections.delete(dataClient)
       if (hadError) log.err(`closed dataClient (${dataClient.uuid})`)
-      if (!localSocket.destroyed) {
+      if (!bridge && !localSocket.destroyed) {
         if (hadError) localSocket.destroy()
         else if (!localSocket.writableEnded) localSocket.end()
       }
@@ -126,14 +130,8 @@ function createClient(config = getClientConfig()) {
     localSocket.on('error', error => log.err('LOCAL_SOCKET', error.name || error.code, error.message))
     localSocket.on('close', hadError => {
       localConnections.delete(localSocket)
-      const wasPiped = isPiped
-      if (wasPiped) {
-        dataClient.unpipe(localSocket)
-        localSocket.unpipe(dataClient)
-        isPiped = false
-      }
-      if (!dataClient.destroyed) {
-        if (hadError || !wasPiped) dataClient.destroy()
+      if (!bridge && !dataClient.destroyed) {
+        if (hadError) dataClient.destroy()
         else if (!dataClient.writableEnded) dataClient.end()
       }
     })
@@ -141,18 +139,8 @@ function createClient(config = getClientConfig()) {
     dataClient.connect(dataJson.port, config.serverHost)
   }
 
-  function onServiceMessage(socket, data) {
-    const message = tryParseJSON(data)
-    if (!message || typeof message !== 'object') return socket.destroy()
-    if (message.protocolVersion !== PROTOCOL_VERSION) {
-      return stopFatal(
-        `${ERRORS.VERSION_MISMATCH}: client=${PROTOCOL_VERSION}, server=${message.protocolVersion ?? 'unknown'}`
-      )
-    }
-    if (message.error) return stopFatal(message.error)
-
-    backoff.reset()
-    if (message.pong) return
+  function onMessage(message, controls) {
+    if (message.error) return controls.fail(message.error)
     if (message.agentDied || !message.port) {
       dataJson = null
       isDataClient = false
@@ -165,86 +153,15 @@ function createClient(config = getClientConfig()) {
     log.info('Agent found, ready!')
   }
 
-  function connect() {
-    if (stopping || fatalError) return
-
-    const socket = new net.Socket()
-    const decodeServiceMessage = createMessageDecoder(
-      data => onServiceMessage(socket, data),
-      () => socket.destroy()
-    )
-    serviceClient = socket
-
-    socket.on('data', decodeServiceMessage)
-    socket.on('connect', () => {
-      enableSocketKeepAlive(socket)
-      connectionToServerLost = false
-      log.info('Connection to server established, waiting for agent.')
-      const message = { protocolVersion: PROTOCOL_VERSION, type: 'client', name: config.name }
-      if (dataJson?.uuid) message.uuid = dataJson.uuid
-      writeMessage(socket, JSON.stringify(message))
-      startPinger(socket)
-      if (dataJson) isDataClient = true
-    })
-    socket.on('error', error => log.err('SERVICE_SOCKET', error.name || error.code, error.message))
-    socket.on('close', () => {
-      socket.removeListener('data', decodeServiceMessage)
-      if (socket !== serviceClient) return
-
-      if (!connectionToServerLost && !stopping) {
-        connectionToServerLost = true
-        log.info('Connection to server lost')
-      }
-      clearPinger()
-      isDataClient = false
-      if (!stopping && !fatalError) connectWithDelay(backoff.next())
-    })
-    socket.connect(config.serverPort, config.serverHost)
-  }
-
-  function connectWithDelay(delay) {
-    if (stopping || fatalError) return
-    if (reconnectTimer) clearTimeout(reconnectTimer)
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = undefined
-      connect()
-    }, delay)
-  }
-
-  function startPinger(socket) {
-    clearPinger()
-    pinger = setInterval(() => {
-      writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ping: Math.random() }))
-    }, 15_000)
-  }
-
-  function clearPinger() {
-    if (pinger) clearInterval(pinger)
-    pinger = undefined
-  }
-
-  function stopFatal(message) {
-    if (fatalError) return
-    fatalError = true
-    log.info(message)
-    if (reconnectTimer) clearTimeout(reconnectTimer)
-    clearPinger()
-    if (serviceClient && !serviceClient.destroyed) serviceClient.destroy()
-    events.emit('fatal', new Error(message))
-  }
-
   function close({ force = false } = {}) {
     if (closePromise) return closePromise
     stopping = true
-    if (reconnectTimer) clearTimeout(reconnectTimer)
-    reconnectTimer = undefined
-    clearPinger()
     stopListening(localServer)
 
     closePromise = (async () => {
       if (!force) await waitForSockets(dataConnections, config.shutdownTimeout)
       await Promise.all([destroySockets(localConnections), destroySockets(dataConnections)])
-      await destroySockets(serviceClient ? [serviceClient] : [])
+      await controlSession.close()
       if (localServer?.closeAllConnections) localServer.closeAllConnections()
       await new Promise(resolve => setImmediate(resolve))
       started = false
@@ -260,7 +177,7 @@ function createClient(config = getClientConfig()) {
       stopping,
       localConnections: localConnections.size,
       dataConnections: dataConnections.size,
-      connected: Boolean(serviceClient && !serviceClient.destroyed),
+      connected: controlSession.getState().connected,
       ready: isDataClient
     }
   }

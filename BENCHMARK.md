@@ -75,6 +75,14 @@ Useful output options are intentionally limited:
 Use `--implementation` for a meaningful transport or code label, for example
 `tcp-before-refactor`, `tcp-node-26`, or `quic-node-26`.
 
+The current refactored TCP code defaults to the `tcp-refactored` label. Keep
+the label explicit for milestone runs:
+
+```sh
+npm run benchmark -- --preset default --implementation tcp-refactored
+npm run benchmark -- --preset resilience --implementation tcp-refactored
+```
+
 ## Traffic-process isolation
 
 The relay server, every agent, and every client run in separate child processes,

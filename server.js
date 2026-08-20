@@ -8,29 +8,19 @@ const { loadEnvironment, getServerConfig } = require('./config')
 if (require.main === module) loadEnvironment(process.argv[2])
 
 const { PROTOCOL_VERSION, ERRORS } = require('./protocol')
-const {
-  tryParseJSON,
-  log,
-  types,
-  verifyDataJson,
-  removeElement,
-  writeMessage,
-  createMessageDecoder,
-  createFirstMessageDecoder
-} = require('./utils')
-const { enableSocketKeepAlive, stopListening, destroySockets, waitForSockets, runCli } = require('./lifecycle')
+const { tryParseJSON, log, types, verifyDataJson, writeMessage, createMessageDecoder } = require('./utils')
+const { enableSocketKeepAlive, stopListening, destroySockets, runCli } = require('./lifecycle')
+const { createTcpDataTransport } = require('./tcp-data-transport')
 const { CLIENT, AGENT } = types
 
 function createServer(config = getServerConfig()) {
   const events = new EventEmitter()
-  const availablePorts = Array.from(
-    { length: 1 + config.portsTo - config.portsFrom },
-    (_, index) => config.portsFrom + index
-  )
   const connections = Object.create(null)
-  const pipes = Object.create(null)
   const serviceSockets = new Set()
-  const dataSockets = new Set()
+  const dataTransport = createTcpDataTransport(config, {
+    onTunnelRequested,
+    onRouteError
+  })
 
   let serviceServer
   let started = false
@@ -152,7 +142,8 @@ function createServer(config = getServerConfig()) {
   function registerAgent(serviceSocket, dataJson, connectionGroup, agentGroup) {
     const agentObj = agentGroup[dataJson.uuid]
     agentObj.socket = serviceSocket
-    agentObj.port = availablePorts.shift()
+    agentObj.dataRoute = dataTransport.openRoute({ name: dataJson.name, agentUuid: dataJson.uuid })
+    agentObj.port = agentObj.dataRoute?.port
 
     if (!agentObj.port) {
       sendJson(serviceSocket, { error: ERRORS.NO_PORTS })
@@ -162,7 +153,6 @@ function createServer(config = getServerConfig()) {
       return serviceSocket.end()
     }
 
-    createDataServer(dataJson.name, dataJson.uuid)
     notify(serviceSocket, agentObj.port, dataJson.uuid)
 
     const clientGroup = connectionGroup[CLIENT]
@@ -197,102 +187,25 @@ function createServer(config = getServerConfig()) {
       }
     }
 
-    const pipeObj = pipes[cProps.name]
     const portToRelease = connection.port
+    const dataRoute = connection.dataRoute
     delete roleGroup[cProps.uuid]
-    if (pipes[cProps.name] === pipeObj) delete pipes[cProps.name]
     pruneConnectionGroup(cProps.name)
 
-    if (pipeObj) destroyPipe(pipeObj, !closing)
-    releasePort(portToRelease)
+    dataTransport.closeRoute(dataRoute, { closeConnections: !closing })
     log.info(cProps.type, cProps.name, 'went offline and released port', portToRelease)
   }
 
-  function createDataServer(connectionName, serviceAgentUuid) {
-    const agentSockets = []
-    const clientSockets = []
-    const conPipes = Object.create(null)
-    const dataServerPort = connections[connectionName][AGENT][serviceAgentUuid].port
-    const pipeObj = { pipes: conPipes }
-    pipes[connectionName] = pipeObj
+  function onTunnelRequested(route) {
+    const agentGroup = connections[route.name]?.[AGENT]
+    const agentObj = agentGroup?.[route.agentUuid]
+    return Boolean(agentObj && sendJson(agentObj.socket, { data: true }))
+  }
 
-    const dataServer = net.createServer({ allowHalfOpen: true }, socket => {
-      if (closing) return socket.destroy()
-
-      enableSocketKeepAlive(socket)
-      dataSockets.add(socket)
-      socket.setTimeout(config.handshakeTimeout, () => socket.destroy())
-
-      const decodeHandshake = createFirstMessageDecoder(
-        (data, remainder) => {
-          socket.removeListener('data', decodeHandshake)
-          socket.pause()
-
-          const dataJson = tryParseJSON(data)
-          log.debug(dataJson)
-
-          if (!dataJson || dataJson.protocolVersion !== PROTOCOL_VERSION) return socket.end()
-          if (!verifyDataJson(dataJson) || !dataJson.uuid) return socket.end()
-
-          socket.uuid = dataJson.uuid
-          socket.initialData = remainder.length > 0 ? Buffer.from(remainder) : null
-          conPipes[socket.uuid] = { type: dataJson.type }
-
-          if (dataJson.type === AGENT) {
-            const clientSocket = takeOpenSocket(clientSockets, conPipes)
-            if (clientSocket) pairSockets(socket, clientSocket, conPipes)
-            else agentSockets.push(socket)
-            return
-          }
-
-          const agentSocket = takeOpenSocket(agentSockets, conPipes)
-          if (agentSocket) {
-            pairSockets(agentSocket, socket, conPipes)
-          } else {
-            clientSockets.push(socket)
-            const agentGroup = connections[connectionName]?.[AGENT]
-            const agentObj = agentGroup?.[serviceAgentUuid]
-            if (!agentObj || !sendJson(agentObj.socket, { data: true })) socket.destroy()
-          }
-        },
-        () => socket.destroy()
-      )
-
-      socket.on('data', decodeHandshake)
-      socket.on('error', error => log.err('AGENT_SERVER_SOCKET', error.name || error.code, error.message))
-      socket.on('close', hadError => {
-        dataSockets.delete(socket)
-        socket.removeListener('data', decodeHandshake)
-        removeElement(agentSockets, socket)
-        removeElement(clientSockets, socket)
-        if (!socket.uuid || !conPipes[socket.uuid]) return
-
-        const connection = conPipes[socket.uuid]
-        if (hadError) log.err(`closed ${connection.type} socket with uuid: '${socket.uuid}'`)
-
-        const pairedSocket = connection.socket
-        if (pairedSocket) {
-          socket.unpipe(pairedSocket)
-          pairedSocket.unpipe(socket)
-          if (!pairedSocket.destroyed) {
-            if (hadError) pairedSocket.destroy()
-            else if (!pairedSocket.writableEnded) pairedSocket.end()
-          }
-        }
-
-        delete conPipes[socket.uuid]
-      })
-    })
-
-    pipeObj.server = dataServer
-    dataServer.listen(dataServerPort)
-    dataServer.on('listening', () => log.info(`Agent "${connectionName}" connected, dedicated port ${dataServerPort}`))
-    dataServer.on('error', error => {
-      log.info('Something went wrong with agent server. Killing agent...\n', error.name || error.code, error.message)
-      const agentGroup = connections[connectionName]?.[AGENT]
-      const agentObj = agentGroup?.[serviceAgentUuid]
-      if (agentObj?.socket) agentObj.socket.destroy()
-    })
+  function onRouteError(route) {
+    const agentGroup = connections[route.name]?.[AGENT]
+    const agentObj = agentGroup?.[route.agentUuid]
+    if (agentObj?.socket) agentObj.socket.destroy()
   }
 
   function close({ force = false } = {}) {
@@ -301,34 +214,28 @@ function createServer(config = getServerConfig()) {
 
     closePromise = (async () => {
       stopListening(serviceServer)
-      for (const pipeObj of Object.values(pipes)) stopListening(pipeObj.server)
-
-      if (!force) await waitForSockets(dataSockets, config.shutdownTimeout)
-
-      await destroySockets(dataSockets)
+      await dataTransport.close({ force, timeout: config.shutdownTimeout })
       await destroySockets(serviceSockets)
       if (serviceServer?.closeAllConnections) serviceServer.closeAllConnections()
-      for (const pipeObj of Object.values(pipes)) {
-        if (pipeObj.server?.closeAllConnections) pipeObj.server.closeAllConnections()
-      }
 
       await new Promise(resolve => setImmediate(resolve))
       started = false
-      log.info('Server stopped. Connections closed:', serviceSockets.size + dataSockets.size)
+      log.info('Server stopped. Connections closed:', serviceSockets.size + dataTransport.getState().dataSockets)
     })()
 
     return closePromise
   }
 
   function getState() {
+    const transportState = dataTransport.getState()
     return {
       started,
       closing,
       connectionNames: Object.keys(connections).length,
-      pipes: Object.keys(pipes).length,
-      availablePorts: [...availablePorts],
+      pipes: transportState.routes,
+      availablePorts: transportState.availablePorts,
       serviceSockets: serviceSockets.size,
-      dataSockets: dataSockets.size
+      dataSockets: transportState.dataSockets
     }
   }
 
@@ -340,25 +247,8 @@ function createServer(config = getServerConfig()) {
     if (Object.keys(connectionGroup).length === 0) delete connections[name]
   }
 
-  function destroyPipe(pipeObj, closeConnections) {
-    if (!pipeObj) return
-    stopListening(pipeObj.server)
-    if (!closeConnections) return
-
-    for (const pipe of Object.values(pipeObj.pipes || {})) {
-      if (pipe.socket) pipe.socket.destroy()
-    }
-    if (pipeObj.server?.closeAllConnections) pipeObj.server.closeAllConnections()
-  }
-
   function notify(socket, port, uuid) {
     return sendJson(socket, { port, uuid })
-  }
-
-  function releasePort(port) {
-    if (!port || availablePorts.includes(port)) return
-    availablePorts.push(port)
-    availablePorts.sort((left, right) => left - right)
   }
 
   function emitFatal(error) {
@@ -368,34 +258,6 @@ function createServer(config = getServerConfig()) {
   }
 
   return Object.assign(events, { start, close, getState })
-}
-
-function takeOpenSocket(sockets, conPipes) {
-  while (sockets.length > 0) {
-    const socket = sockets.shift()
-    if (!socket.destroyed && socket.uuid && conPipes[socket.uuid]) return socket
-  }
-}
-
-function pairSockets(agentSocket, clientSocket, conPipes) {
-  log.debug('creating pipe')
-  conPipes[agentSocket.uuid].socket = clientSocket
-  conPipes[clientSocket.uuid].socket = agentSocket
-
-  agentSocket.setTimeout(0)
-  clientSocket.setTimeout(0)
-
-  agentSocket.pipe(clientSocket)
-  clientSocket.pipe(agentSocket)
-  sendJson(clientSocket, { ready: true })
-
-  if (agentSocket.initialData) clientSocket.write(agentSocket.initialData)
-  if (clientSocket.initialData) agentSocket.write(clientSocket.initialData)
-  agentSocket.initialData = null
-  clientSocket.initialData = null
-
-  agentSocket.resume()
-  clientSocket.resume()
 }
 
 function sendJson(socket, data) {

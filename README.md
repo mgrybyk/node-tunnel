@@ -30,7 +30,7 @@ relay to `localhost:22` on device 1.
 
 ![SSH routed from the client on device 2 through the public server to the agent on device 1](tunnel-flow.png)
 
-## Quick start: tunnel SSH
+## Quick start tunnel SSH
 
 You need Node.js 24 or newer on all three hosts. Clone and install the project
 on each one:
@@ -62,7 +62,7 @@ Allow inbound TCP traffic to the control port (`32121`) and the full data-port
 range (`32131–32141`), then start the relay:
 
 ```sh
-npm run start:server -- server.env
+npm run server -- server.env
 ```
 
 ### 2. Start the agent on device 1
@@ -80,7 +80,7 @@ N_T_AGENT_DATA_PORT=22
 ```
 
 ```sh
-npm run start:agent -- agent.env
+npm run agent -- agent.env
 ```
 
 The target can also be another host reachable from device 1; set
@@ -100,7 +100,7 @@ N_T_CLIENT_PORT=8000
 ```
 
 ```sh
-npm run start:client -- client.env
+npm run client -- client.env
 ```
 
 The client and agent names must match. Now connect on device 2:
@@ -178,6 +178,9 @@ the plaintext payload path, shared-key trust domain, replay limitation, client
 listener exposure, and deferred denial-of-service hardening.
 
 ## Development
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities, connection
+flow, lifecycle ownership, and the transport boundary.
 
 ```sh
 npm run check

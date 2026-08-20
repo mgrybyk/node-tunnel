@@ -165,7 +165,7 @@ function normalizeOptions(options) {
     preset,
     scenario: normalizedScenario,
     scenarioFingerprint: fingerprintScenario(normalizedScenario),
-    implementation: String(options.implementation || 'tcp-baseline'),
+    implementation: String(options.implementation || 'tcp-refactored'),
     startupTimeoutMs: positiveInteger(options.startupTimeoutMs || defaultStartupTimeoutMs, 'startup timeout'),
     outputPath: options.outputPath === false ? null : path.resolve(options.outputPath || defaultOutputPath(preset)),
     quiet: Boolean(options.quiet)

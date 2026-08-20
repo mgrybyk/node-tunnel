@@ -2,5 +2,6 @@ node_modules/
 coverage/
 benchmark-results/
 .vscode
-.env
 .env.*
+*.env
+!example.env
