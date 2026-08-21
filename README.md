@@ -24,11 +24,11 @@ through the same three-process setup.
 
 ## How it works
 
-The agent on device 1 and the client on device 2 both connect outward to the
+The client on device 1 and the agent on device 2 both connect outward to the
 public relay. The client exposes `127.0.0.1:8000`, which is routed through the
-relay to `localhost:22` on device 1.
+relay to `localhost:22` on device 2.
 
-![SSH routed from the client on device 2 through the public relay to the agent on device 1](docs/tunnel-flow.png)
+![SSH routed from the client on device 1 through the public relay to the agent on device 2](docs/tunnel-flow.png)
 
 ## Quick start tunnel SSH
 
@@ -63,7 +63,7 @@ Allow inbound TCP traffic to the relay port (`32121`), then start the relay:
 npm run relay -- relay.env
 ```
 
-### 2. Start the agent on device 1
+### 2. Start the agent on device 2
 
 Create `agent.env` beside the private SSH service:
 
@@ -81,10 +81,10 @@ N_T_AGENT_DATA_PORT=22
 npm run agent -- agent.env
 ```
 
-The target can also be another host reachable from device 1; set
+The target can also be another host reachable from device 2; set
 `N_T_AGENT_DATA_HOST` accordingly.
 
-### 3. Start the client on device 2
+### 3. Start the client on device 1
 
 Create `client.env` where you want the local SSH entry point:
 
@@ -102,7 +102,7 @@ N_T_CLIENT_PORT=8000
 npm run client -- client.env
 ```
 
-The client and agent names must match. Now connect on device 2:
+The client and agent names must match. Now connect on device 1 to device 2:
 
 ```sh
 ssh user@127.0.0.1 -p 8000
