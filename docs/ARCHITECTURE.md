@@ -29,7 +29,8 @@ When a client requests a tunnel:
 2. The ticket is sent to the client and agent over their control connections.
 3. Both peers open a data connection to the relay using that ticket.
 4. The relay validates and pairs the two connections.
-5. Application bytes are then forwarded in both directions.
+5. The relay sends a readiness acknowledgement to both peers.
+6. Application bytes are then forwarded in both directions.
 
 Tickets are single-use, expire automatically, and are bound to the current
 client and agent sessions.

@@ -141,8 +141,12 @@ N_T_SHUTDOWN_TIMEOUT_MS=5000
 
 Reconnects use capped exponential backoff with jitter. Established control and
 tunnel sockets enable TCP keepalive after 30 seconds of inactivity; the OS
-controls later probes. On `SIGINT` or `SIGTERM`, processes stop accepting work,
-allow active streams a bounded drain period, and then close remaining sockets.
+controls later probes. `N_T_HANDSHAKE_TIMEOUT_MS` is a fixed application-level
+deadline: control connections must receive relay registration and both tunnel
+data connections must receive relay readiness before it expires. Network
+traffic does not extend that deadline. On `SIGINT` or `SIGTERM`, processes stop
+accepting work, allow active streams a bounded drain period, and then close
+remaining sockets.
 
 </details>
 

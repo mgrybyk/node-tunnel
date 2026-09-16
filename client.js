@@ -10,7 +10,14 @@ if (require.main === module) loadEnvironment(process.argv[2])
 
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createFirstMessageDecoder } = require('./utils')
-const { enableSocketKeepAlive, stopListening, destroySockets, waitForSockets, runCli } = require('./lifecycle')
+const {
+  enableSocketKeepAlive,
+  startSocketDeadline,
+  stopListening,
+  destroySockets,
+  waitForSockets,
+  runCli
+} = require('./lifecycle')
 const { createTcpByteChannel, bridgeByteChannels } = require('./byte-channel')
 const { createPeerSession } = require('./peer-session')
 
@@ -130,7 +137,7 @@ function createClient(config = getClientConfig()) {
     })
     let bridge
     dataConnections.add(dataClient)
-    dataClient.setTimeout(config.handshakeTimeout, () => dataClient.destroy())
+    const clearReadinessDeadline = startSocketDeadline(dataClient, config.handshakeTimeout)
 
     const decodeReady = createFirstMessageDecoder(
       (message, remainder) => {
@@ -139,6 +146,7 @@ function createClient(config = getClientConfig()) {
           return dataClient.destroy()
         }
 
+        clearReadinessDeadline()
         dataClient.removeListener('data', decodeReady)
         bridge = bridgeByteChannels(
           createTcpByteChannel(dataClient, { initialData: remainder }),
@@ -152,6 +160,7 @@ function createClient(config = getClientConfig()) {
     dataClient.on('data', decodeReady)
     dataClient.on('error', error => log.err('DATA_CLIENT', error.name || error.code, error.message))
     dataClient.on('close', hadError => {
+      clearReadinessDeadline()
       dataClient.removeListener('data', decodeReady)
       dataConnections.delete(dataClient)
       if (hadError) log.err('closed dataClient')

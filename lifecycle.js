@@ -6,6 +6,16 @@ function enableSocketKeepAlive(socket) {
   socket.setKeepAlive(true, TCP_KEEP_ALIVE_INITIAL_DELAY)
 }
 
+function startSocketDeadline(socket, timeout) {
+  let timer = setTimeout(() => socket.destroy(), timeout)
+
+  return function clearSocketDeadline() {
+    if (!timer) return
+    clearTimeout(timer)
+    timer = undefined
+  }
+}
+
 function createBackoff({ baseDelay, maxDelay, jitterPercent = 20, random = Math.random }) {
   let attempt = 0
 
@@ -111,6 +121,7 @@ function runCli(createApplication) {
 module.exports = {
   TCP_KEEP_ALIVE_INITIAL_DELAY,
   enableSocketKeepAlive,
+  startSocketDeadline,
   createBackoff,
   stopListening,
   destroySockets,

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+### Changed
+
+- Control sessions now become connected only after the relay confirms
+  registration, rather than immediately after TCP or TLS setup.
+- Control and data readiness use fixed application-level deadlines so proxy
+  traffic cannot keep stalled handshakes alive indefinitely.
+- Both data peers now wait for relay readiness before forwarding application
+  bytes. This updates the wire protocol to version 6.
+
 ## 0.5.0
 
 ### Breaking changes

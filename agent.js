@@ -8,8 +8,8 @@ const { loadEnvironment, getAgentConfig } = require('./config')
 if (require.main === module) loadEnvironment(process.argv[2])
 
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES, ERRORS } = require('./protocol')
-const { log, writeMessage } = require('./utils')
-const { enableSocketKeepAlive, destroySockets, waitForSockets, runCli } = require('./lifecycle')
+const { tryParseJSON, log, writeMessage, createFirstMessageDecoder } = require('./utils')
+const { enableSocketKeepAlive, startSocketDeadline, destroySockets, waitForSockets, runCli } = require('./lifecycle')
 const { createTcpByteChannel, bridgeByteChannels } = require('./byte-channel')
 const { createPeerSession } = require('./peer-session')
 
@@ -83,9 +83,10 @@ function createAgent(config = getAgentConfig()) {
 
       localSocket = new net.Socket({ allowHalfOpen: true })
       localConnections.add(localSocket)
-      localSocket.setTimeout(config.handshakeTimeout, () => localSocket.destroy())
+      const clearTargetDeadline = startSocketDeadline(localSocket, config.handshakeTimeout)
       localSocket.on('error', error => log.err('LOCAL_SOCKET', error.name || error.code, error.message))
       localSocket.on('connect', () => {
+        clearTargetDeadline()
         if (dataAgent.destroyed || stopping) return localSocket.destroy()
         enableSocketKeepAlive(localSocket)
 
@@ -98,9 +99,9 @@ function createAgent(config = getAgentConfig()) {
             ticket
           })
         )
-        bridge = bridgeByteChannels(createTcpByteChannel(dataAgent), createTcpByteChannel(localSocket))
       })
       localSocket.on('close', hadError => {
+        clearTargetDeadline()
         localConnections.delete(localSocket)
         if (!bridge && !dataAgent.destroyed) {
           controlSession.send({ cancelTunnel: { ticket } })
@@ -112,9 +113,29 @@ function createAgent(config = getAgentConfig()) {
     })
 
     dataConnections.add(dataAgent)
-    dataAgent.setTimeout(config.handshakeTimeout, () => dataAgent.destroy())
+    const clearReadinessDeadline = startSocketDeadline(dataAgent, config.handshakeTimeout)
+    const decodeReady = createFirstMessageDecoder(
+      (message, remainder) => {
+        const readyMessage = tryParseJSON(message)
+        if (!readyMessage || readyMessage.protocolVersion !== PROTOCOL_VERSION || !readyMessage.ready || !localSocket) {
+          return dataAgent.destroy()
+        }
+
+        clearReadinessDeadline()
+        dataAgent.removeListener('data', decodeReady)
+        bridge = bridgeByteChannels(
+          createTcpByteChannel(dataAgent, { initialData: remainder }),
+          createTcpByteChannel(localSocket)
+        )
+      },
+      () => dataAgent.destroy()
+    )
+
+    dataAgent.on('data', decodeReady)
     dataAgent.on('error', error => log.err('DATA_AGENT', error.name || error.code, error.message))
     dataAgent.on('close', hadError => {
+      clearReadinessDeadline()
+      dataAgent.removeListener('data', decodeReady)
       dataConnections.delete(dataAgent)
       if (hadError) log.debug('closed dataAgent')
       if (!bridge) controlSession.send({ cancelTunnel: { ticket } })

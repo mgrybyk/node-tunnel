@@ -3,7 +3,7 @@
 const { connectToRelay } = require('./relay-connection')
 const { PROTOCOL_VERSION, CONNECTION_KINDS } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createMessageDecoder } = require('./utils')
-const { enableSocketKeepAlive, createBackoff, destroySockets } = require('./lifecycle')
+const { enableSocketKeepAlive, startSocketDeadline, createBackoff, destroySockets } = require('./lifecycle')
 
 function createPeerSession({
   config,
@@ -28,7 +28,6 @@ function createPeerSession({
   let stopping = false
   let fatalError = false
   let connected = false
-  let connectionLossReported = false
 
   function start() {
     if (!stopping && !fatalError && !socket) connect()
@@ -39,8 +38,6 @@ function createPeerSession({
 
     const nextSocket = connectToRelay(config, {}, () => {
       enableSocketKeepAlive(nextSocket)
-      connected = true
-      connectionLossReported = false
       const message = {
         protocolVersion: PROTOCOL_VERSION,
         kind: CONNECTION_KINDS.CONTROL,
@@ -50,12 +47,11 @@ function createPeerSession({
       const uuid = getUuid()
       if (uuid) message.uuid = uuid
       writeMessage(nextSocket, JSON.stringify(message))
-      startPinger(nextSocket)
-      onConnected()
     })
+    const clearReadinessDeadline = startSocketDeadline(nextSocket, config.handshakeTimeout)
 
     const decodeMessage = createMessageDecoder(
-      data => handleMessage(nextSocket, data),
+      data => handleMessage(nextSocket, data, clearReadinessDeadline),
       () => nextSocket.destroy()
     )
     socket = nextSocket
@@ -63,21 +59,21 @@ function createPeerSession({
     nextSocket.on('data', decodeMessage)
     nextSocket.on('error', error => log.err(errorLabel, error.name || error.code, error.message))
     nextSocket.on('close', () => {
+      clearReadinessDeadline()
       nextSocket.removeListener('data', decodeMessage)
       if (nextSocket !== socket) return
 
+      const wasConnected = connected
       socket = undefined
       connected = false
       clearPinger()
-      if (!connectionLossReported) {
-        connectionLossReported = true
-        onDisconnected()
-      }
+      if (wasConnected) onDisconnected()
       if (!stopping && !fatalError) connectWithDelay(backoff.next())
     })
   }
 
-  function handleMessage(messageSocket, data) {
+  function handleMessage(messageSocket, data, clearReadinessDeadline) {
+    if (messageSocket !== socket) return
     const message = tryParseJSON(data)
     if (!message || typeof message !== 'object') return messageSocket.destroy()
     if (message.protocolVersion !== PROTOCOL_VERSION) {
@@ -86,7 +82,16 @@ function createPeerSession({
       )
     }
 
-    backoff.reset()
+    if (!connected && isRegistration(message)) {
+      clearReadinessDeadline()
+      connected = true
+      backoff.reset()
+      startPinger(messageSocket)
+      onConnected()
+    } else if (!connected && !message.error) {
+      return messageSocket.destroy()
+    }
+
     if (message.pong) return
     onMessage(message, {
       disconnect() {
@@ -146,6 +151,15 @@ function createPeerSession({
   }
 
   return { start, close, send, fail, getState }
+}
+
+function isRegistration(message) {
+  return (
+    message.registration &&
+    typeof message.registration.uuid === 'string' &&
+    message.registration.uuid.length > 0 &&
+    typeof message.registration.ready === 'boolean'
+  )
 }
 
 module.exports = { createPeerSession }

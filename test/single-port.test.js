@@ -78,13 +78,14 @@ test('one relay port pairs ticketed data sockets, preserves preface remainders, 
     )
   )
 
-  const [clientReady, receivedByAgent] = await Promise.all([
+  const [clientReady, agentReady] = await Promise.all([
     readFirstFrameAndBytes(clientData, agentPayload.length),
-    readBytes(agentData, clientPayload.length + clientPayloadBeforePair.length)
+    readFirstFrameAndBytes(agentData, clientPayload.length + clientPayloadBeforePair.length)
   ])
   assert.equal(clientReady.message.ready, true)
+  assert.equal(agentReady.message.ready, true)
   assert.deepEqual(clientReady.payload, agentPayload)
-  assert.deepEqual(receivedByAgent, Buffer.concat([clientPayload, clientPayloadBeforePair]))
+  assert.deepEqual(agentReady.payload, Buffer.concat([clientPayload, clientPayloadBeforePair]))
 
   const replay = await connectData(port)
   sockets.push(replay)
@@ -187,33 +188,5 @@ function readFirstFrameAndBytes(socket, expectedPayloadLength) {
 
     socket.on('data', decode)
     socket.once('error', reject)
-  })
-}
-
-function readBytes(socket, expectedLength) {
-  return new Promise((resolve, reject) => {
-    const chunks = []
-    let length = 0
-
-    function onData(chunk) {
-      chunks.push(chunk)
-      length += chunk.length
-      if (length < expectedLength) return
-      cleanup()
-      resolve(Buffer.concat(chunks, length))
-    }
-
-    function onError(error) {
-      cleanup()
-      reject(error)
-    }
-
-    function cleanup() {
-      socket.off('data', onData)
-      socket.off('error', onError)
-    }
-
-    socket.on('data', onData)
-    socket.on('error', onError)
   })
 }

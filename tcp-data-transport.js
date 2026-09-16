@@ -4,7 +4,7 @@ const crypto = require('node:crypto')
 const { PROTOCOL_VERSION, TYPES } = require('./protocol')
 const { log, writeMessage } = require('./utils')
 const { createTcpByteChannel, bridgeByteChannels } = require('./byte-channel')
-const { destroySockets, waitForSockets } = require('./lifecycle')
+const { startSocketDeadline, destroySockets, waitForSockets } = require('./lifecycle')
 
 const MAX_PENDING_TUNNELS = 1024
 
@@ -40,13 +40,15 @@ function createTcpDataTransport(config) {
     if (!pending || pending[message.type]) return socket.destroy()
 
     dataSockets.add(socket)
-    socket.setTimeout(config.handshakeTimeout, () => socket.destroy())
+    const clearReadinessDeadline = startSocketDeadline(socket, config.handshakeTimeout)
     const side = {
       socket,
-      channel: createTcpByteChannel(socket, { initialData: remainder })
+      channel: createTcpByteChannel(socket, { initialData: remainder }),
+      clearReadinessDeadline
     }
     pending[message.type] = side
     socket.on('close', () => {
+      clearReadinessDeadline()
       dataSockets.delete(socket)
       if (pendingTunnels.get(pending.ticket) === pending) cancelPendingTunnel(pending.ticket)
       const active = socket.activeTunnel
@@ -68,10 +70,11 @@ function createTcpDataTransport(config) {
     activeTunnels.add(active)
     pending.client.socket.activeTunnel = active
     pending.agent.socket.activeTunnel = active
-    pending.client.socket.setTimeout(0)
-    pending.agent.socket.setTimeout(0)
+    pending.client.clearReadinessDeadline()
+    pending.agent.clearReadinessDeadline()
 
     sendJson(pending.client.socket, { ready: true })
+    sendJson(pending.agent.socket, { ready: true })
     bridgeByteChannels(pending.agent.channel, pending.client.channel)
   }
 

@@ -16,7 +16,7 @@ const {
   createMessageDecoder,
   createFirstMessageDecoder
 } = require('./utils')
-const { enableSocketKeepAlive, stopListening, destroySockets, runCli } = require('./lifecycle')
+const { enableSocketKeepAlive, startSocketDeadline, stopListening, destroySockets, runCli } = require('./lifecycle')
 const { createTcpDataTransport } = require('./tcp-data-transport')
 const { CLIENT, AGENT } = TYPES
 
@@ -68,16 +68,22 @@ function createRelay(config = getRelayConfig()) {
 
     enableSocketKeepAlive(socket)
     handshakeSockets.add(socket)
-    socket.setTimeout(config.handshakeTimeout, () => socket.destroy())
+    const clearHandshakeDeadline = startSocketDeadline(socket, config.handshakeTimeout)
     const onHandshakeError = error => log.err('RELAY_SOCKET', error.name || error.code, error.message)
     const decodeFirstMessage = createFirstMessageDecoder(
-      (data, remainder) => classifySocket(socket, decodeFirstMessage, onHandshakeError, data, remainder),
+      (data, remainder) => {
+        clearHandshakeDeadline()
+        classifySocket(socket, decodeFirstMessage, onHandshakeError, data, remainder)
+      },
       () => socket.destroy()
     )
 
     socket.on('data', decodeFirstMessage)
     socket.on('error', onHandshakeError)
-    socket.on('close', () => handshakeSockets.delete(socket))
+    socket.on('close', () => {
+      clearHandshakeDeadline()
+      handshakeSockets.delete(socket)
+    })
   }
 
   function classifySocket(socket, decodeFirstMessage, onHandshakeError, data, remainder) {
