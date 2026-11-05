@@ -1,6 +1,7 @@
 'use strict'
 
 const crypto = require('node:crypto')
+const { traceTunnel, tunnelReference } = require('./diagnostics')
 const { PROTOCOL_VERSION, TYPES } = require('./protocol')
 const { log, writeMessage } = require('./utils')
 const { createTcpByteChannel, bridgeByteChannels } = require('./byte-channel')
@@ -27,8 +28,9 @@ function createTcpDataTransport(config) {
       ticket,
       client: undefined,
       agent: undefined,
-      timer: setTimeout(() => cancelPendingTunnel(ticket), config.handshakeTimeout)
+      timer: setTimeout(() => cancelPendingTunnel(ticket, undefined, 'pairing-timeout'), config.handshakeTimeout)
     }
+    traceTunnel('pending-created', ticket, { timeoutMs: config.handshakeTimeout })
     pendingTunnels.set(ticket, pending)
     return ticket
   }
@@ -37,7 +39,15 @@ function createTcpDataTransport(config) {
     socket.on('error', error => log.err('DATA_SOCKET', error.name || error.code, error.message))
     if (closing || !isDataMessage(message)) return socket.destroy()
     const pending = pendingTunnels.get(message.ticket)
-    if (!pending || pending[message.type]) return socket.destroy()
+    if (!pending || pending[message.type]) {
+      traceTunnel('data-rejected', message.ticket, {
+        type: message.type,
+        reason: pending ? 'duplicate-side' : 'unknown-or-expired-ticket'
+      })
+      return socket.destroy()
+    }
+    traceTunnel('data-accepted', message.ticket, { type: message.type })
+    socket.tunnelTrace?.('data-accepted', { type: message.type, tunnelRef: tunnelReference(message.ticket) })
 
     dataSockets.add(socket)
     const clearReadinessDeadline = startSocketDeadline(socket, config.handshakeTimeout)
@@ -50,14 +60,18 @@ function createTcpDataTransport(config) {
     socket.on('close', () => {
       clearReadinessDeadline()
       dataSockets.delete(socket)
-      if (pendingTunnels.get(pending.ticket) === pending) cancelPendingTunnel(pending.ticket)
+      if (pendingTunnels.get(pending.ticket) === pending)
+        cancelPendingTunnel(pending.ticket, undefined, 'data-socket-closed')
       const active = socket.activeTunnel
       if (!active) return
       active.sockets.delete(socket)
       if (active.sockets.size === 0) activeTunnels.delete(active)
     })
 
-    if (!pending.client || !pending.agent) return
+    if (!pending.client || !pending.agent) {
+      traceTunnel('waiting-for-peer', pending.ticket, { waitingFor: pending.client ? 'agent' : 'client' })
+      return
+    }
 
     pendingTunnels.delete(pending.ticket)
     clearTimeout(pending.timer)
@@ -73,15 +87,23 @@ function createTcpDataTransport(config) {
     pending.client.clearReadinessDeadline()
     pending.agent.clearReadinessDeadline()
 
+    traceTunnel('paired-ready-queued', pending.ticket)
+    pending.client.socket.tunnelTrace?.('bridge-ready')
+    pending.agent.socket.tunnelTrace?.('bridge-ready')
     sendJson(pending.client.socket, { ready: true })
     sendJson(pending.agent.socket, { ready: true })
     bridgeByteChannels(pending.agent.channel, pending.client.channel)
   }
 
-  function cancelPendingTunnel(ticket, session) {
+  function cancelPendingTunnel(ticket, session, reason = 'cancelled') {
     const pending = pendingTunnels.get(ticket)
     if (!pending) return false
     if (session && pending.clientSession !== session && pending.agentSession !== session) return false
+    traceTunnel('pending-cancelled', ticket, {
+      reason,
+      clientArrived: Boolean(pending.client),
+      agentArrived: Boolean(pending.agent)
+    })
     pendingTunnels.delete(ticket)
     clearTimeout(pending.timer)
     for (const side of [pending.client, pending.agent]) {
@@ -92,7 +114,8 @@ function createTcpDataTransport(config) {
 
   function cancelPendingForSession(session) {
     for (const pending of [...pendingTunnels.values()]) {
-      if (pending.clientSession === session || pending.agentSession === session) cancelPendingTunnel(pending.ticket)
+      if (pending.clientSession === session || pending.agentSession === session)
+        cancelPendingTunnel(pending.ticket, undefined, 'control-session-closed')
     }
   }
 

@@ -181,6 +181,13 @@ setup. Debug output includes socket IDs, DNS/TCP/TLS progress, TLS certificate
 issuer, registration, target connection, relay readiness, errors, and closes.
 Each socket also reports byte counts and readable/writable buffer sizes every
 15 seconds. Agent data and target labels share a tunnel sequence number.
+A hashed `tunnelRef` identifies the same tunnel across agent, client, and relay
+logs without exposing its ticket. Relay logs now show incoming connections,
+first-message timeouts, accepted data registrations, which peer is missing,
+pairing, and cancellation reasons. When the agent receives no readiness reply,
+match its `tunnelRef` against the relay's `data-accepted`, `waiting-for-peer`,
+`paired-ready-queued`, and `pending-cancelled` events. An absent relay event
+alone is inconclusive unless the capture covers the entire attempt.
 The new socket traces do not log application payloads, encryption keys, or
 tunnel tickets. Logs do contain addresses and certificate issuer information.
 

@@ -8,7 +8,7 @@ const { loadEnvironment, getClientConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
-const { traceSocket } = require('./diagnostics')
+const { traceSocket, tunnelReference } = require('./diagnostics')
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createFirstMessageDecoder } = require('./utils')
 const {
@@ -138,7 +138,7 @@ function createClient(config = getClientConfig()) {
         })
       )
     })
-    trace = traceSocket(dataClient, 'client-data')
+    trace = traceSocket(dataClient, 'client-data', { tunnelRef: tunnelReference(ticket), requestId })
     let bridge
     dataConnections.add(dataClient)
     const clearReadinessDeadline = startSocketDeadline(dataClient, config.handshakeTimeout, () => {

@@ -7,7 +7,7 @@ const { loadEnvironment, getAgentConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
-const { traceSocket } = require('./diagnostics')
+const { traceSocket, tunnelReference } = require('./diagnostics')
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES, ERRORS } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createFirstMessageDecoder } = require('./utils')
 const { enableSocketKeepAlive, startSocketDeadline, destroySockets, waitForSockets, runCli } = require('./lifecycle')
@@ -96,7 +96,7 @@ function createAgent(config = getAgentConfig()) {
 
       localSocket = new net.Socket({ allowHalfOpen: true })
       trace('target-connecting', { host: config.targetHost, port: config.targetPort })
-      const traceTarget = traceSocket(localSocket, `agent-target-${tunnelId}`)
+      const traceTarget = traceSocket(localSocket, `agent-target-${tunnelId}`, { tunnelRef: tunnelReference(ticket) })
       localConnections.add(localSocket)
       const clearTargetDeadline = startSocketDeadline(localSocket, config.handshakeTimeout, () => {
         traceTarget('target-connect-timeout')
@@ -129,7 +129,7 @@ function createAgent(config = getAgentConfig()) {
       localSocket.connect(config.targetPort, config.targetHost)
     })
 
-    trace = traceSocket(dataAgent, `agent-data-${tunnelId}`)
+    trace = traceSocket(dataAgent, `agent-data-${tunnelId}`, { tunnelRef: tunnelReference(ticket) })
     dataConnections.add(dataAgent)
     const clearReadinessDeadline = startSocketDeadline(dataAgent, config.handshakeTimeout, () => {
       trace('data-readiness-timeout', { timeoutMs: config.handshakeTimeout })

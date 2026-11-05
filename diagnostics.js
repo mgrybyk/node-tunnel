@@ -1,11 +1,12 @@
 'use strict'
 
+const { createHash } = require('node:crypto')
 const { log } = require('./utils')
 
 let nextId = 0
 
 // Do not attach a data listener: it would resume sockets paused for tunnel readiness.
-function traceSocket(socket, label) {
+function traceSocket(socket, label, context = {}) {
   if (process.env.N_T_LOG_DEBUG !== 'true') return () => {}
   const id = `${label}-${++nextId}`
   const startedAt = Date.now()
@@ -19,6 +20,7 @@ function traceSocket(socket, label) {
       readableLength: socket.readableLength,
       writableLength: socket.writableLength,
       writableNeedDrain: socket.writableNeedDrain,
+      ...context,
       ...details
     })
   }
@@ -26,7 +28,7 @@ function traceSocket(socket, label) {
     phase = event
     trace(event, details)
   }
-  trace('created')
+  trace('created', { remoteAddress: socket.remoteAddress, remotePort: socket.remotePort })
   socket.on('lookup', (error, address, family) => trace('dns', { code: error?.code, address, family }))
   socket.prependListener('connect', () =>
     mark('tcp-connected', { remoteAddress: socket.remoteAddress, remotePort: socket.remotePort })
@@ -53,4 +55,15 @@ function traceSocket(socket, label) {
   return (event, details) => mark(event, details)
 }
 
-module.exports = { traceSocket }
+// A non-redeemable reference lets peer and relay logs identify the same tunnel.
+function tunnelReference(ticket) {
+  if (typeof ticket !== 'string') return undefined
+  return createHash('sha256').update(ticket).digest('hex').slice(0, 16)
+}
+
+function traceTunnel(event, ticket, details = {}) {
+  if (process.env.N_T_LOG_DEBUG !== 'true') return
+  log.debug(new Date().toISOString(), 'tunnel', event, { tunnelRef: tunnelReference(ticket), ...details })
+}
+
+module.exports = { traceSocket, tunnelReference, traceTunnel }
