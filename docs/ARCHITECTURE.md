@@ -34,7 +34,8 @@ agent sessions.
 - **Relay** registers routes, issues tickets, and pairs data connections.
 - **Agent** connects tunnel traffic to the private target.
 - **Client** exposes a local listener and requests tunnels.
-- **Peer session** owns control framing, heartbeats, and reconnects.
+- **Peer session** owns the relay-issued UUID, control framing, heartbeats, and
+  reconnects.
 - **Data transport** owns ticket matching and tunnel lifecycle.
 - **Data readiness** validates setup and replaces setup listeners with the
   socket bridge after relay acknowledgement.
@@ -45,10 +46,15 @@ Each relay route has one agent and a map of clients. Replacing a control session
 cancels its pending tickets; established streams survive session replacement.
 An agent disconnect closes its active streams and marks clients unready. Those
 clients stay registered and become ready when a replacement agent arrives.
+Pairing removes pending setup listeners; established data sockets retain only
+their active tunnel state. Internal sessions and transports share the messaging
+instance supplied by their application.
 
 Applications capture their control key and logging settings at creation. Module
 imports do not read environment-dependent settings. Both frame decoders use one
 parser that scans chunks once and copies fragmented frames only when complete.
+Each encrypted, base64-encoded control frame is limited to 4 KiB, excluding its
+newline delimiter. Raw tunnel payload bytes do not count toward this limit.
 
 ## TLS boundary
 

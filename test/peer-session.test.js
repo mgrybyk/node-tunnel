@@ -9,8 +9,10 @@ const tls = require('node:tls')
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
 const { createPeerSession } = require('../peer-session')
+const { getAgentConfig, getClientConfig } = require('../config')
 const { PROTOCOL_VERSION, TYPES } = require('../protocol')
-const { crypt } = require('../utils').createMessaging()
+const messaging = require('../utils').createMessaging()
+const { crypt } = messaging
 
 test('TLS control sessions become connected only after relay registration', async t => {
   const sockets = []
@@ -77,8 +79,37 @@ test('TLS control sessions close when relay registration stalls despite incoming
   await session.close()
 })
 
-function createSession({ handshakeTimeout, onConnected, ...config }) {
+for (const type of [TYPES.AGENT, TYPES.CLIENT]) {
+  test(`${type} control sessions reuse their relay-issued UUID after reconnecting`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+    const sockets = []
+    t.mock.method(tls, 'connect', (_options, onSecureConnect) => {
+      const socket = new MockSocket(onSecureConnect)
+      sockets.push(socket)
+      return socket
+    })
+    const session = createSession({ type, handshakeTimeout: 100, onConnected() {} })
+    t.after(() => session.close())
+    session.start()
+    sockets[0].completeTlsHandshake()
+    const firstRegistration = JSON.parse(crypt.decrypt(sockets[0].writes[0].toString().trim()))
+    assert.equal(firstRegistration.uuid, undefined)
+    sockets[0].receive({ protocolVersion: PROTOCOL_VERSION, registration: { uuid: 'issued-id', ready: true } })
+    // Readiness changes must preserve identity even while an agent is offline.
+    sockets[0].receive({ protocolVersion: PROTOCOL_VERSION, registration: { uuid: 'issued-id', ready: false } })
+    sockets[0].destroy()
+    t.mock.timers.tick(100)
+    assert.equal(sockets.length, 2)
+    sockets[1].completeTlsHandshake()
+    const nextRegistration = JSON.parse(crypt.decrypt(sockets[1].writes[0].toString().trim()))
+    assert.equal(nextRegistration.uuid, 'issued-id')
+    assert.equal(nextRegistration.type, type)
+  })
+}
+
+function createSession({ handshakeTimeout, onConnected, type = TYPES.CLIENT, ...config }) {
   return createPeerSession({
+    messaging,
     config: {
       useTLS: true,
       relayHost: 'relay.example.test',
@@ -89,9 +120,8 @@ function createSession({ handshakeTimeout, onConnected, ...config }) {
       handshakeTimeout,
       ...config
     },
-    type: TYPES.CLIENT,
+    type,
     name: 'tls-readiness-test',
-    getUuid: () => undefined,
     onConnected,
     onDisconnected() {},
     onMessage() {},
@@ -135,6 +165,58 @@ class MockSocket extends EventEmitter {
     this.emit('close', false)
     return this
   }
+}
+
+for (const [label, config] of [
+  ['API fallbacks', {}],
+  ['agent defaults', getAgentConfig({})],
+  ['client defaults', getClientConfig({})]
+]) {
+  test(`${label} detect missing pongs after nine seconds without extra pings or extending the deadline`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+    const sockets = []
+    t.mock.method(tls, 'connect', (_options, onSecureConnect) => {
+      const socket = new MockSocket(onSecureConnect)
+      sockets.push(socket)
+      return socket
+    })
+    const session = createSession({
+      ...config,
+      useTLS: true,
+      reconnectDelay: 100,
+      reconnectMaxDelay: 100,
+      reconnectJitterPercent: 0,
+      handshakeTimeout: 100,
+      onConnected() {}
+    })
+    t.after(() => session.close())
+    session.start()
+    const socket = sockets[0]
+    socket.completeTlsHandshake()
+    const registration = { protocolVersion: PROTOCOL_VERSION, registration: { uuid: 'id', ready: true } }
+    socket.receive(registration)
+    t.mock.timers.tick(1_999)
+    assert.equal(socket.writes.length, 1)
+    t.mock.timers.tick(1)
+    assert.deepEqual(JSON.parse(crypt.decrypt(socket.writes[1].toString().trim())), {
+      protocolVersion: PROTOCOL_VERSION,
+      ping: true
+    })
+    for (let i = 0; i < 6; i++) {
+      t.mock.timers.tick(1_000)
+      socket.receive(registration)
+    }
+    assert.equal(socket.writes.length, 2)
+    t.mock.timers.tick(999)
+    assert.equal(socket.destroyed, false)
+    t.mock.timers.tick(1)
+    assert.equal(socket.destroyed, true)
+    assert.equal(session.getState().connected, false)
+    t.mock.timers.tick(99)
+    assert.equal(sockets.length, 1)
+    t.mock.timers.tick(1)
+    assert.equal(sockets.length, 2)
+  })
 }
 
 test('registered TLS control reconnects after missing pongs despite incoming traffic', async t => {

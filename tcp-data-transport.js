@@ -3,13 +3,12 @@
 const crypto = require('node:crypto')
 const { createDiagnostics } = require('./diagnostics')
 const { TYPES } = require('./protocol')
-const { createMessaging } = require('./utils')
 const { bridgeSockets } = require('./socket-bridge')
 const { destroySockets, waitForSockets } = require('./lifecycle')
 
 const MAX_PENDING_TUNNELS = 1024
 
-function createTcpDataTransport(config, messaging = createMessaging(config)) {
+function createTcpDataTransport(config, messaging) {
   const { log, sendJson } = messaging
   const { traceTunnel } = createDiagnostics(log)
   const pendingTunnels = new Map()
@@ -37,7 +36,7 @@ function createTcpDataTransport(config, messaging = createMessaging(config)) {
   }
 
   function acceptSocket(socket, message, remainder) {
-    socket.on('error', error => log.err('DATA_SOCKET', error.name || error.code, error.message))
+    socket.on('error', onDataError)
     if (closing || !isDataMessage(message)) return socket.destroy()
     const pending = pendingTunnels.get(message.ticket)
     if (!pending || pending[message.type]) {
@@ -49,21 +48,12 @@ function createTcpDataTransport(config, messaging = createMessaging(config)) {
     }
     traceTunnel?.('data-accepted', message.ticket, { type: message.type, socketId: socket.tunnelTrace?.id })
 
-    dataSockets.add(socket)
-    const side = {
+    trackDataSocket(socket)
+    pending[message.type] = {
       socket,
-      initialData: remainder
+      initialData: remainder,
+      onClose: watchPendingSocket(socket, pending.ticket)
     }
-    pending[message.type] = side
-    socket.on('close', () => {
-      dataSockets.delete(socket)
-      if (pendingTunnels.get(pending.ticket) === pending)
-        cancelPendingTunnel(pending.ticket, undefined, 'data-socket-closed')
-      const active = socket.activeTunnel
-      if (!active) return
-      active.sockets.delete(socket)
-      if (active.sockets.size === 0) activeTunnels.delete(active)
-    })
 
     if (!pending.client || !pending.agent) {
       traceTunnel?.('waiting-for-peer', pending.ticket, { waitingFor: pending.client ? 'agent' : 'client' })
@@ -77,8 +67,10 @@ function createTcpDataTransport(config, messaging = createMessaging(config)) {
       sockets: new Set([pending.client.socket, pending.agent.socket])
     }
     activeTunnels.add(active)
-    pending.client.socket.activeTunnel = active
-    pending.agent.socket.activeTunnel = active
+    for (const side of [pending.client, pending.agent]) {
+      side.socket.off('close', side.onClose)
+      side.socket.activeTunnel = active
+    }
 
     traceTunnel?.('paired-ready-queued', pending.ticket)
     pending.client.socket.tunnelTrace?.('bridge-ready')
@@ -89,8 +81,29 @@ function createTcpDataTransport(config, messaging = createMessaging(config)) {
       leftInitialData: pending.agent.initialData,
       rightInitialData: pending.client.initialData
     })
-    pending.agent.initialData = undefined
-    pending.client.initialData = undefined
+  }
+
+  function onDataError(error) {
+    log.err('DATA_SOCKET', error.name || error.code, error.message)
+  }
+
+  // Keep established socket observers outside the setup scope so they cannot retain it.
+  function trackDataSocket(socket) {
+    dataSockets.add(socket)
+    socket.once('close', () => {
+      dataSockets.delete(socket)
+      const active = socket.activeTunnel
+      delete socket.activeTunnel
+      if (!active) return
+      active.sockets.delete(socket)
+      if (active.sockets.size === 0) activeTunnels.delete(active)
+    })
+  }
+
+  function watchPendingSocket(socket, ticket) {
+    const onClose = () => cancelPendingTunnel(ticket, undefined, 'data-socket-closed')
+    socket.once('close', onClose)
+    return onClose
   }
 
   function cancelPendingTunnel(ticket, session, reason = 'cancelled') {
@@ -111,7 +124,7 @@ function createTcpDataTransport(config, messaging = createMessaging(config)) {
   }
 
   function cancelPendingForSession(session) {
-    for (const pending of [...pendingTunnels.values()]) {
+    for (const pending of pendingTunnels.values()) {
       if (pending.clientSession === session || pending.agentSession === session)
         cancelPendingTunnel(pending.ticket, undefined, 'control-session-closed')
     }
@@ -126,7 +139,7 @@ function createTcpDataTransport(config, messaging = createMessaging(config)) {
 
   function closeAgentSession(session) {
     cancelPendingForSession(session)
-    for (const active of [...activeTunnels]) {
+    for (const active of activeTunnels) {
       if (active.agentSession !== session) continue
       for (const socket of active.sockets) {
         if (!socket.destroyed) socket.destroy()
@@ -136,7 +149,7 @@ function createTcpDataTransport(config, messaging = createMessaging(config)) {
 
   async function close({ force = false, timeout = config.shutdownTimeout } = {}) {
     closing = true
-    for (const ticket of [...pendingTunnels.keys()]) cancelPendingTunnel(ticket)
+    for (const ticket of pendingTunnels.keys()) cancelPendingTunnel(ticket)
     if (!force) await waitForSockets(dataSockets, timeout)
     await destroySockets(dataSockets)
     activeTunnels.clear()

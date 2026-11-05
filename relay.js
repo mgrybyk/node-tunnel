@@ -273,6 +273,7 @@ function createRelay(config = getRelayConfig()) {
     if (cProps.type === CLIENT) {
       if (route.clients.get(cProps.uuid) !== socket) return
       route.clients.delete(cProps.uuid)
+      dataTransport.cancelPendingForSession(socket)
     } else {
       if (route.agent !== socket) return
       route.agent = undefined
@@ -283,7 +284,6 @@ function createRelay(config = getRelayConfig()) {
         dataTransport.closeAgentSession(socket)
       }
     }
-    dataTransport.cancelPendingForSession(socket)
     if (!route.agent && route.clients.size === 0) routes.delete(cProps.name)
     log.info(`${cProps.type} "${cProps.name}" went offline.`)
   }

@@ -3,15 +3,14 @@
 const { createDiagnostics } = require('./diagnostics')
 const { connectToRelay } = require('./relay-connection')
 const { PROTOCOL_VERSION, CONNECTION_KINDS } = require('./protocol')
-const { tryParseJSON, createMessaging } = require('./utils')
+const { tryParseJSON } = require('./utils')
 const { enableSocketKeepAlive, startSocketDeadline, createBackoff, destroySockets } = require('./lifecycle')
 
 function createPeerSession({
   config,
-  messaging = createMessaging(config),
+  messaging,
   type,
   name,
-  getUuid,
   onConnected,
   onDisconnected,
   onMessage,
@@ -27,6 +26,7 @@ function createPeerSession({
   })
 
   let socket
+  let uuid
   let reconnectTimer
   let pinger
   let pongDeadline
@@ -49,7 +49,6 @@ function createPeerSession({
         type,
         name
       }
-      const uuid = getUuid()
       if (uuid) message.uuid = uuid
       sendJson(nextSocket, message)
     })
@@ -98,7 +97,9 @@ function createPeerSession({
       )
     }
 
-    if (!connected && isRegistration(message)) {
+    const registration = isRegistration(message)
+    if (registration) uuid = message.registration.uuid
+    if (!connected && registration) {
       clearReadinessDeadline()
       trace?.('relay-registered')
       connected = true
@@ -139,9 +140,9 @@ function createPeerSession({
       pongDeadline = setTimeout(() => {
         log.info(`${errorLabel}: relay pong timed out; reconnecting`)
         activeSocket.destroy()
-      }, config.heartbeatTimeout ?? 15_000)
+      }, config.heartbeatTimeout ?? 7_000)
       sendJson(activeSocket, { ping: true })
-    }, config.heartbeatInterval ?? 5_000)
+    }, config.heartbeatInterval ?? 2_000)
   }
 
   function clearPinger() {

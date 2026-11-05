@@ -45,14 +45,20 @@ Most deployments can keep these defaults.
 | `N_T_RECONNECT_JITTER_PERCENT` | agent, client | `10`                         | Random variation around reconnect delays; `0` disables it. |
 | `N_T_HANDSHAKE_TIMEOUT_MS`     | all           | `3000`                       | Deadline for registration and tunnel setup.                |
 | `N_T_CONTROL_IDLE_TIMEOUT_MS`  | relay         | `15000`                      | Close a control connection after this idle period.         |
-| `N_T_HEARTBEAT_INTERVAL_MS`    | agent, client | `5000`                       | Time between control-connection pings.                     |
-| `N_T_HEARTBEAT_TIMEOUT_MS`     | agent, client | `15000`                      | Time to wait for a pong before reconnecting.               |
+| `N_T_HEARTBEAT_INTERVAL_MS`    | agent, client | `2000`                       | Time between control-connection pings.                     |
+| `N_T_HEARTBEAT_TIMEOUT_MS`     | agent, client | `7000`                       | Time to wait for a pong before reconnecting.               |
 | `N_T_SHUTDOWN_TIMEOUT_MS`      | all           | `2000`                       | Time allowed for active streams to drain.                  |
 | `N_T_LOG_DEBUG`                | all           | `false`                      | Emit connection and tunnel trace events.                   |
 | `N_T_LOG_ERROR`                | all           | `false`                      | Emit error logs.                                           |
 
-Set the relay idle timeout above the peer heartbeat interval. See
-[Deployment](DEPLOYMENT.md#reliability) before changing timeout behavior.
+Set the relay idle timeout above the peer heartbeat interval. Most deployments
+should keep the defaults.
+
+With the default heartbeat settings, peers typically detect a silently broken
+control connection within 7–9 seconds, then wait for the configured reconnect
+delay before trying again. Increase the pong timeout on paths that regularly
+stall for more than 7 seconds. Explicit environment or API settings override
+these defaults.
 
 ## JavaScript API
 

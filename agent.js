@@ -26,14 +26,12 @@ function createAgent(config = getAgentConfig()) {
   let stopping = false
   let closePromise
   let sameNameRetries = 3
-  let serviceUuid
   let ready = false
   const controlSession = createPeerSession({
     config,
     messaging,
     type: TYPES.AGENT,
     name: config.name,
-    getUuid: () => serviceUuid,
     onConnected() {
       ready = false
       log.info('Connection to relay established.')
@@ -78,7 +76,6 @@ function createAgent(config = getAgentConfig()) {
 
     sameNameRetries = 3
     if (message.registration) {
-      serviceUuid = message.registration.uuid
       ready = Boolean(message.registration.ready)
       return
     }

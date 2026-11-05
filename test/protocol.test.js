@@ -7,8 +7,10 @@ const { spawnSync } = require('node:child_process')
 
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
-const { crypt, writeMessage, createMessageDecoder, createFirstMessageDecoder } = require('../utils').createMessaging()
+const { MAX_CONTROL_FRAME_BYTES, createMessaging } = require('../utils')
+const { crypt, writeMessage, sendJson, createMessageDecoder, createFirstMessageDecoder } = createMessaging()
 const { getRelayConfig, readPort } = require('../config')
+const { PROTOCOL_VERSION } = require('../protocol')
 
 test('control decoder handles fragmented and coalesced frames', () => {
   const encoded = []
@@ -92,7 +94,7 @@ for (const [name, createDecoder] of Object.entries({
   first: createFirstMessageDecoder
 })) {
   test(`${name} decoder bounds copying and scanning under heavy fragmentation`, t => {
-    const payload = 'x'.repeat(96 * 1024)
+    const payload = 'x'.repeat(MAX_CONTROL_FRAME_BYTES / 2)
     const frame = Buffer.from(`${crypt.encrypt(payload)}\n`)
     const concat = Buffer.concat
     const indexOf = Buffer.prototype.indexOf
@@ -111,14 +113,14 @@ for (const [name, createDecoder] of Object.entries({
       message => messages.push(message),
       () => assert.fail('valid fragmented frame rejected')
     )
-    for (let offset = 0; offset < frame.length; offset += 17) decode(frame.subarray(offset, offset + 17))
+    for (let offset = 0; offset < frame.length; offset++) decode(frame.subarray(offset, offset + 1))
     assert.deepEqual(messages, [payload])
     assert.ok(copied < 2 * frame.length, `${copied} copied bytes for ${frame.length} wire bytes`)
     assert.equal(scanned, frame.length)
   })
 
   test(`${name} decoder rejects oversized frames regardless of fragmentation`, async t => {
-    const frame = Buffer.from(`${crypt.encrypt('x'.repeat(1024 * 1024))}\n`)
+    const frame = Buffer.from(`${crypt.encrypt('x'.repeat(MAX_CONTROL_FRAME_BYTES))}\n`)
     for (const splitAt of [frame.length, frame.length - 1, 100]) {
       await t.test(`first chunk contains ${splitAt} bytes`, () => {
         let messages = 0
@@ -139,9 +141,9 @@ for (const [name, createDecoder] of Object.entries({
 
 test('frame limit applies to each encoded frame, including the exact boundary', () => {
   // Base64 expands every 3 bytes to 4; encryption adds a version byte, 12-byte IV, and 16-byte tag.
-  const payload = 'x'.repeat(((1024 * 1024) / 4) * 3 - 29)
+  const payload = 'x'.repeat((MAX_CONTROL_FRAME_BYTES / 4) * 3 - 29)
   const frame = Buffer.from(`${crypt.encrypt(payload)}\n`)
-  assert.equal(frame.length - 1, 1024 * 1024)
+  assert.equal(frame.length - 1, 4096)
   const messages = []
   const decode = createMessageDecoder(
     message => messages.push(message),
@@ -149,6 +151,20 @@ test('frame limit applies to each encoded frame, including the exact boundary', 
   )
   decode(Buffer.concat([frame, frame]))
   assert.deepEqual(messages, [payload, payload])
+})
+
+test('maximum-length registration fields fit within the control-frame limit even with JSON escaping', () => {
+  // Control characters require six JSON bytes per character, more than UTF-8 names.
+  const registration = { kind: 'control', type: 'client', name: '\u0000'.repeat(128), uuid: '\u0000'.repeat(128) }
+  let frame
+  sendJson({ write: data => (frame = Buffer.from(data)) }, registration)
+  assert.ok(frame.length - 1 < MAX_CONTROL_FRAME_BYTES)
+  const messages = []
+  createMessageDecoder(
+    data => messages.push(JSON.parse(data)),
+    () => assert.fail('maximum-length registration rejected')
+  )(frame)
+  assert.deepEqual(messages, [{ protocolVersion: PROTOCOL_VERSION, ...registration }])
 })
 
 test('first-message frame limit excludes coalesced raw payload bytes', () => {

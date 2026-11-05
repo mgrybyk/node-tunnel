@@ -47,8 +47,8 @@ function readCommonConfig(env = process.env) {
     reconnectMaxDelay,
     reconnectJitterPercent: readInteger('N_T_RECONNECT_JITTER_PERCENT', 10, { min: 0, max: 100 }, env),
     handshakeTimeout: readInteger('N_T_HANDSHAKE_TIMEOUT_MS', 3_000, { min: 100, max: 300_000 }, env),
-    heartbeatInterval: readInteger('N_T_HEARTBEAT_INTERVAL_MS', 5_000, { min: 100, max: 300_000 }, env),
-    heartbeatTimeout: readInteger('N_T_HEARTBEAT_TIMEOUT_MS', 15_000, { min: 100, max: 3_600_000 }, env),
+    heartbeatInterval: readInteger('N_T_HEARTBEAT_INTERVAL_MS', 2_000, { min: 100, max: 300_000 }, env),
+    heartbeatTimeout: readInteger('N_T_HEARTBEAT_TIMEOUT_MS', 7_000, { min: 100, max: 3_600_000 }, env),
     shutdownTimeout: readInteger('N_T_SHUTDOWN_TIMEOUT_MS', 2_000, { min: 0, max: 300_000 }, env)
   }
 }

@@ -26,7 +26,6 @@ function createClient(config = getClientConfig()) {
 
   /** @type {net.Server} */
   let localServer
-  let serviceUuid
   let started = false
   let stopping = false
   let startPromise
@@ -37,7 +36,6 @@ function createClient(config = getClientConfig()) {
     messaging,
     type: TYPES.CLIENT,
     name: config.name,
-    getUuid: () => serviceUuid,
     onConnected() {
       ready = false
       log.info('Connection to relay established, waiting for agent.')
@@ -152,7 +150,6 @@ function createClient(config = getClientConfig()) {
   function onMessage(message, controls) {
     if (message.error) return controls.fail(message.error)
     if (message.registration) {
-      serviceUuid = message.registration.uuid
       ready = Boolean(message.registration.ready)
       if (!ready) closePendingLocalConnections()
       if (ready) log.info('Agent found, ready!')

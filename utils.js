@@ -3,6 +3,9 @@
 const crypto = require('node:crypto')
 const { PROTOCOL_VERSION } = require('./protocol')
 
+// Bounds each encrypted/base64 frame, excluding its newline and raw tunnel bytes.
+const MAX_CONTROL_FRAME_BYTES = 4 * 1024
+
 function tryParseJSON(json) {
   try {
     return JSON.parse(json)
@@ -94,7 +97,7 @@ function createMessaging(config = {}) {
         const end = delimiter < 0 ? data.length : delimiter
         const fragment = data.subarray(offset, end)
         length += fragment.length
-        if (length > 1024 * 1024) return invalid()
+        if (length > MAX_CONTROL_FRAME_BYTES) return invalid()
 
         if (delimiter < 0) {
           fragments.push(fragment)
@@ -133,4 +136,4 @@ function createMessaging(config = {}) {
   }
 }
 
-module.exports = { createMessaging, tryParseJSON }
+module.exports = { MAX_CONTROL_FRAME_BYTES, createMessaging, tryParseJSON }
