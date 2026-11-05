@@ -131,15 +131,24 @@ You have to generate certificates for your domain and use a TLS proxy. For examp
 <summary><strong>Reliability and lifecycle settings</strong></summary>
 
 ```dotenv
-N_T_RECONNECT_DELAY_MS=5000
+N_T_RECONNECT_DELAY_MS=4000
 N_T_RECONNECT_MAX_DELAY_MS=30000
-N_T_RECONNECT_JITTER_PERCENT=20
-N_T_HANDSHAKE_TIMEOUT_MS=10000
-N_T_CONTROL_IDLE_TIMEOUT_MS=45000
-N_T_SHUTDOWN_TIMEOUT_MS=5000
+N_T_RECONNECT_JITTER_PERCENT=10
+N_T_HANDSHAKE_TIMEOUT_MS=3000
+N_T_CONTROL_IDLE_TIMEOUT_MS=15000
+N_T_HEARTBEAT_INTERVAL_MS=5000
+N_T_HEARTBEAT_TIMEOUT_MS=15000
+N_T_SHUTDOWN_TIMEOUT_MS=2000
 ```
 
-Reconnects use capped exponential backoff with jitter. Established control and
+Reconnects use capped exponential backoff with jitter.
+`N_T_RECONNECT_JITTER_PERCENT` randomizes each retry delay by ± the given
+percentage to spread reconnect attempts after an outage. With the default `10`,
+a 4-second base delay becomes 3.6–4.4 seconds. Set it to `0` for deterministic
+retry timing; most deployments can leave it at the default. The maximum delay
+caps the exponential base before jitter is applied.
+
+Established control and
 tunnel sockets enable TCP keepalive after 30 seconds of inactivity; the OS
 controls later probes. `N_T_HANDSHAKE_TIMEOUT_MS` is a fixed application-level
 deadline: control connections must receive relay registration and both tunnel
@@ -148,7 +157,53 @@ traffic does not extend that deadline. On `SIGINT` or `SIGTERM`, processes stop
 accepting work, allow active streams a bounded drain period, and then close
 remaining sockets.
 
+Registered agents and clients send a ping every `N_T_HEARTBEAT_INTERVAL_MS`.
+A missing pong triggers reconnect after `N_T_HEARTBEAT_TIMEOUT_MS` from the
+first unanswered ping; other incoming traffic does not extend this deadline.
+Set the relay control idle timeout above the heartbeat interval. Active data
+streams have no application idle cutoff, since TCP services can legitimately
+remain silent.
+
 </details>
+
+### Diagnosing TLS/proxy stalls
+
+Temporarily set these in the agent environment file (and, when possible, on the
+client and relay too), then restart the processes:
+
+```dotenv
+N_T_LOG_DEBUG=true
+N_T_LOG_ERROR=true
+```
+
+Capture a failed attempt with timestamps, including the preceding connection
+setup. Debug output includes socket IDs, DNS/TCP/TLS progress, TLS certificate
+issuer, registration, target connection, relay readiness, errors, and closes.
+Each socket also reports byte counts and readable/writable buffer sizes every
+15 seconds. Agent data and target labels share a tunnel sequence number.
+The new socket traces do not log application payloads, encryption keys, or
+tunnel tickets. Logs do contain addresses and certificate issuer information.
+
+- `tls-connected` without registration/readiness points to a stall after TLS.
+- `target-connect-timeout` points to the agent's connection to the target service.
+- `registration-timeout` or `data-readiness-timeout` identifies setup deadlines.
+- `relay pong timed out` means a registered control connection stopped responding.
+- `bridge-ready` followed by growing `writableLength` indicates queued output;
+  compare both ends' byte counts to locate where progress stops. Counters measure
+  socket activity, not application acknowledgments.
+
+These traces can distinguish timing/backpressure bugs from proxy interruptions;
+they do not by themselves establish that Zscaler caused a failure. Control frames
+already support fragmentation/coalescing and authenticate their contents, so
+smaller messages are not a demonstrated fix. Return both logging settings to
+`false` after collecting the reproduction.
+
+If you deployed the sample HAProxy config, also check its connection rejection
+logs: it permits 32 simultaneous connections and 32 new connections per 10
+seconds per source IP. A shared proxy/NAT egress address can make multiple users
+share these limits. Each peer uses a control connection plus a separate data
+connection per tunnel. This is a deployment hypothesis to verify against the
+actual proxy configuration and logs.
 
 ## JavaScript API
 

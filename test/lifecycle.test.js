@@ -483,3 +483,27 @@ function listenOnAllInterfaces(server) {
 function silenceInfoLogs(t) {
   t.mock.method(log, 'info', () => {})
 }
+
+test('relay destroys a registered control connection when its idle timeout expires', { timeout: 5_000 }, async t => {
+  silenceInfoLogs(t)
+  const ports = await reserveTopologyPorts(0)
+  const relay = createRelay({ ...serverConfig(ports), controlIdleTimeout: 100 })
+  t.after(() => relay.close({ force: true }))
+  await relay.start()
+  const socket = net.createConnection({ host, port: ports.service })
+  t.after(() => socket.destroy())
+  socket.on('error', () => {})
+  socket.resume()
+  writeMessage(
+    socket,
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      kind: CONNECTION_KINDS.CONTROL,
+      type: TYPES.CLIENT,
+      name: 'idle-control'
+    })
+  )
+  await waitForCondition(() => relay.getState().serviceSockets === 1)
+  await waitForSocketClose(socket, 2_000)
+  await waitForCondition(() => relay.getState().serviceSockets === 0)
+})

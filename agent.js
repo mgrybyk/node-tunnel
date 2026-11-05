@@ -7,6 +7,7 @@ const { loadEnvironment, getAgentConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
+const { traceSocket } = require('./diagnostics')
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES, ERRORS } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createFirstMessageDecoder } = require('./utils')
 const { enableSocketKeepAlive, startSocketDeadline, destroySockets, waitForSockets, runCli } = require('./lifecycle')
@@ -24,6 +25,7 @@ function createAgent(config = getAgentConfig()) {
   let sameNameRetries = 3
   let serviceUuid
   let ready = false
+  let tunnelSequence = 0
   const controlSession = createPeerSession({
     config,
     type: TYPES.AGENT,
@@ -48,6 +50,14 @@ function createAgent(config = getAgentConfig()) {
     if (started) return Promise.resolve()
     if (stopping) return Promise.reject(new Error('agent is closing'))
     started = true
+    log.debug(new Date().toISOString(), 'agent-start', {
+      relayHost: config.relayHost,
+      relayPort: config.relayPort,
+      useTLS: config.useTLS,
+      targetHost: config.targetHost,
+      targetPort: config.targetPort,
+      handshakeTimeoutMs: config.handshakeTimeout
+    })
     controlSession.start()
     return Promise.resolve()
   }
@@ -71,22 +81,30 @@ function createAgent(config = getAgentConfig()) {
     }
     if (!message.openTunnel?.ticket || !ready || stopping) return log.debug('ignored service message', message)
 
+    log.debug(new Date().toISOString(), 'agent tunnel requested')
     openDataConnection(message.openTunnel.ticket)
   }
 
   function openDataConnection(ticket) {
+    const tunnelId = ++tunnelSequence
     let localSocket
     let bridge
+    let trace = () => {}
     const dataAgent = connectToRelay(config, { allowHalfOpen: true }, () => {
       if (stopping) return dataAgent.destroy()
       enableSocketKeepAlive(dataAgent)
 
       localSocket = new net.Socket({ allowHalfOpen: true })
+      trace('target-connecting', { host: config.targetHost, port: config.targetPort })
+      const traceTarget = traceSocket(localSocket, `agent-target-${tunnelId}`)
       localConnections.add(localSocket)
-      const clearTargetDeadline = startSocketDeadline(localSocket, config.handshakeTimeout)
+      const clearTargetDeadline = startSocketDeadline(localSocket, config.handshakeTimeout, () => {
+        traceTarget('target-connect-timeout')
+      })
       localSocket.on('error', error => log.err('LOCAL_SOCKET', error.name || error.code, error.message))
       localSocket.on('connect', () => {
         clearTargetDeadline()
+        trace('data-registration-sent')
         if (dataAgent.destroyed || stopping) return localSocket.destroy()
         enableSocketKeepAlive(localSocket)
 
@@ -100,27 +118,31 @@ function createAgent(config = getAgentConfig()) {
           })
         )
       })
-      localSocket.on('close', hadError => {
+      localSocket.on('close', () => {
         clearTargetDeadline()
         localConnections.delete(localSocket)
         if (!bridge && !dataAgent.destroyed) {
           controlSession.send({ cancelTunnel: { ticket } })
-          if (hadError) dataAgent.destroy()
-          else if (!dataAgent.writableEnded) dataAgent.end()
+          dataAgent.destroy()
         }
       })
       localSocket.connect(config.targetPort, config.targetHost)
     })
 
+    trace = traceSocket(dataAgent, `agent-data-${tunnelId}`)
     dataConnections.add(dataAgent)
-    const clearReadinessDeadline = startSocketDeadline(dataAgent, config.handshakeTimeout)
+    const clearReadinessDeadline = startSocketDeadline(dataAgent, config.handshakeTimeout, () => {
+      trace('data-readiness-timeout', { timeoutMs: config.handshakeTimeout })
+    })
     const decodeReady = createFirstMessageDecoder(
       (message, remainder) => {
         const readyMessage = tryParseJSON(message)
         if (!readyMessage || readyMessage.protocolVersion !== PROTOCOL_VERSION || !readyMessage.ready || !localSocket) {
+          trace('invalid-data-ready')
           return dataAgent.destroy()
         }
 
+        trace('bridge-ready', { remainderBytes: remainder.length })
         clearReadinessDeadline()
         dataAgent.removeListener('data', decodeReady)
         bridge = bridgeByteChannels(
@@ -128,11 +150,17 @@ function createAgent(config = getAgentConfig()) {
           createTcpByteChannel(localSocket)
         )
       },
-      () => dataAgent.destroy()
+      () => {
+        trace('invalid-data-frame')
+        dataAgent.destroy()
+      }
     )
 
     dataAgent.on('data', decodeReady)
     dataAgent.on('error', error => log.err('DATA_AGENT', error.name || error.code, error.message))
+    dataAgent.on('end', () => {
+      if (!bridge) dataAgent.destroy()
+    })
     dataAgent.on('close', hadError => {
       clearReadinessDeadline()
       dataAgent.removeListener('data', decodeReady)
@@ -140,8 +168,7 @@ function createAgent(config = getAgentConfig()) {
       if (hadError) log.debug('closed dataAgent')
       if (!bridge) controlSession.send({ cancelTunnel: { ticket } })
       if (!bridge && localSocket && !localSocket.destroyed) {
-        if (hadError) localSocket.destroy()
-        else if (!localSocket.writableEnded) localSocket.end()
+        localSocket.destroy()
       }
     })
   }

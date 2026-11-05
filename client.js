@@ -8,6 +8,7 @@ const { loadEnvironment, getClientConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
+const { traceSocket } = require('./diagnostics')
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createFirstMessageDecoder } = require('./utils')
 const {
@@ -123,7 +124,9 @@ function createClient(config = getClientConfig()) {
       return localSocket.destroy()
     }
 
+    let trace = () => {}
     const dataClient = connectToRelay(config, { allowHalfOpen: true }, () => {
+      trace('data-registration-sent')
       enableSocketKeepAlive(dataClient)
       writeMessage(
         dataClient,
@@ -135,9 +138,12 @@ function createClient(config = getClientConfig()) {
         })
       )
     })
+    trace = traceSocket(dataClient, 'client-data')
     let bridge
     dataConnections.add(dataClient)
-    const clearReadinessDeadline = startSocketDeadline(dataClient, config.handshakeTimeout)
+    const clearReadinessDeadline = startSocketDeadline(dataClient, config.handshakeTimeout, () => {
+      trace('data-readiness-timeout', { timeoutMs: config.handshakeTimeout })
+    })
 
     const decodeReady = createFirstMessageDecoder(
       (message, remainder) => {
@@ -146,6 +152,7 @@ function createClient(config = getClientConfig()) {
           return dataClient.destroy()
         }
 
+        trace('bridge-ready', { remainderBytes: remainder.length })
         clearReadinessDeadline()
         dataClient.removeListener('data', decodeReady)
         bridge = bridgeByteChannels(
@@ -159,21 +166,22 @@ function createClient(config = getClientConfig()) {
 
     dataClient.on('data', decodeReady)
     dataClient.on('error', error => log.err('DATA_CLIENT', error.name || error.code, error.message))
+    dataClient.on('end', () => {
+      if (!bridge) dataClient.destroy()
+    })
     dataClient.on('close', hadError => {
       clearReadinessDeadline()
       dataClient.removeListener('data', decodeReady)
       dataConnections.delete(dataClient)
       if (hadError) log.err('closed dataClient')
       if (!bridge && !localSocket.destroyed) {
-        if (hadError) localSocket.destroy()
-        else if (!localSocket.writableEnded) localSocket.end()
+        localSocket.destroy()
       }
     })
 
-    localSocket.on('close', hadError => {
+    localSocket.on('close', () => {
       if (!bridge && !dataClient.destroyed) {
-        if (hadError) dataClient.destroy()
-        else if (!dataClient.writableEnded) dataClient.end()
+        dataClient.destroy()
       }
     })
   }

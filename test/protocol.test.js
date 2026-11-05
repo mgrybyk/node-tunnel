@@ -110,3 +110,18 @@ test('runtime startup rejects a crypt key with the wrong byte length', () => {
   assert.equal(result.status, 1)
   assert.match(result.stderr, /N_T_CRYPT_KEY must contain exactly 32 UTF-8 bytes/)
 })
+
+test('a control message queued under backpressure counts as sent', () => {
+  let writes = 0
+  const socket = {
+    write() {
+      writes++
+      return false
+    }
+  }
+  assert.equal(writeMessage(socket, 'queued'), true)
+  assert.equal(writes, 1)
+  socket.writableEnded = true
+  assert.equal(writeMessage(socket, 'too late'), false)
+  assert.equal(writes, 1)
+})

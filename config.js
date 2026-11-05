@@ -31,7 +31,7 @@ function readName(name, fallback, env = process.env) {
 }
 
 function readCommonConfig(env = process.env) {
-  const reconnectDelay = readInteger('N_T_RECONNECT_DELAY_MS', 5_000, { min: 100, max: 300_000 }, env)
+  const reconnectDelay = readInteger('N_T_RECONNECT_DELAY_MS', 4_000, { min: 100, max: 300_000 }, env)
   const reconnectMaxDelay = readInteger(
     'N_T_RECONNECT_MAX_DELAY_MS',
     Math.max(30_000, reconnectDelay),
@@ -44,9 +44,11 @@ function readCommonConfig(env = process.env) {
     relayPort: readPort('N_T_RELAY_PORT', 1337, env),
     reconnectDelay,
     reconnectMaxDelay,
-    reconnectJitterPercent: readInteger('N_T_RECONNECT_JITTER_PERCENT', 20, { min: 0, max: 100 }, env),
-    handshakeTimeout: readInteger('N_T_HANDSHAKE_TIMEOUT_MS', 10_000, { min: 100, max: 300_000 }, env),
-    shutdownTimeout: readInteger('N_T_SHUTDOWN_TIMEOUT_MS', 5_000, { min: 0, max: 300_000 }, env)
+    reconnectJitterPercent: readInteger('N_T_RECONNECT_JITTER_PERCENT', 10, { min: 0, max: 100 }, env),
+    handshakeTimeout: readInteger('N_T_HANDSHAKE_TIMEOUT_MS', 3_000, { min: 100, max: 300_000 }, env),
+    heartbeatInterval: readInteger('N_T_HEARTBEAT_INTERVAL_MS', 5_000, { min: 100, max: 300_000 }, env),
+    heartbeatTimeout: readInteger('N_T_HEARTBEAT_TIMEOUT_MS', 15_000, { min: 100, max: 3_600_000 }, env),
+    shutdownTimeout: readInteger('N_T_SHUTDOWN_TIMEOUT_MS', 2_000, { min: 0, max: 300_000 }, env)
   }
 }
 
@@ -54,9 +56,9 @@ function getRelayConfig(env = process.env) {
   return {
     serviceHost: env.N_T_RELAY_BIND_HOST || '0.0.0.0',
     servicePort: readPort('N_T_RELAY_PORT', 1337, env),
-    handshakeTimeout: readInteger('N_T_HANDSHAKE_TIMEOUT_MS', 10_000, { min: 100, max: 300_000 }, env),
-    controlIdleTimeout: readInteger('N_T_CONTROL_IDLE_TIMEOUT_MS', 45_000, { min: 1_000, max: 3_600_000 }, env),
-    shutdownTimeout: readInteger('N_T_SHUTDOWN_TIMEOUT_MS', 5_000, { min: 0, max: 300_000 }, env)
+    handshakeTimeout: readInteger('N_T_HANDSHAKE_TIMEOUT_MS', 3_000, { min: 100, max: 300_000 }, env),
+    controlIdleTimeout: readInteger('N_T_CONTROL_IDLE_TIMEOUT_MS', 15_000, { min: 1_000, max: 3_600_000 }, env),
+    shutdownTimeout: readInteger('N_T_SHUTDOWN_TIMEOUT_MS', 2_000, { min: 0, max: 300_000 }, env)
   }
 }
 

@@ -148,7 +148,10 @@ function createRelay(config = getRelayConfig()) {
 
   function finishControlRegistration(socket, remainder) {
     controlSockets.add(socket)
-    socket.setTimeout(config.controlIdleTimeout)
+    socket.setTimeout(config.controlIdleTimeout, () => {
+      log.debug(new Date().toISOString(), 'relay-control-idle-timeout')
+      socket.destroy()
+    })
     const decodeMessage = createMessageDecoder(
       data => onControlMessage(socket, data),
       () => socket.destroy()

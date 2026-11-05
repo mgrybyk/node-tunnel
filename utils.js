@@ -110,12 +110,14 @@ const messageDelimiter = 0x0a
 const maxMessageLength = 1024 * 1024
 
 module.exports.writeMessage = (socket, message) => {
-  if (!socket || socket.destroyed) return false
+  if (!socket || socket.destroyed || socket.writableEnded) return false
 
   const encrypted = crypt.encrypt(message)
   if (encrypted === null) return false
 
-  return socket.write(`${encrypted}\n`)
+  // A false write() result means queued with backpressure, not a failed send.
+  socket.write(`${encrypted}\n`)
+  return true
 }
 
 module.exports.createMessageDecoder = (onMessage, onInvalid) => {

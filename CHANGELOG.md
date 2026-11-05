@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Reconnect registered control sessions when relay pongs stop arriving, and
+  close idle relay control sockets when their configured timeout expires.
+- Treat backpressured control writes as successfully queued messages instead
+  of cancelling valid tunnel requests.
+- Destroy unpaired local/data sockets after setup failures so half-open peers
+  cannot keep failed tunnels alive.
+- Include the relay connection helper in the published package.
+
+### Added
+
+- Opt-in socket diagnostics with timestamps, connection phases, TLS metadata,
+  byte/buffer counts, periodic snapshots, and setup timeout reasons.
+- Configurable peer heartbeat intervals and pong deadlines.
+
 ## 0.6.0
 
 ### Changed

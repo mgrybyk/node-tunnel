@@ -1,5 +1,6 @@
 'use strict'
 
+const { traceSocket } = require('./diagnostics')
 const { connectToRelay } = require('./relay-connection')
 const { PROTOCOL_VERSION, CONNECTION_KINDS } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createMessageDecoder } = require('./utils')
@@ -25,6 +26,7 @@ function createPeerSession({
   let socket
   let reconnectTimer
   let pinger
+  let pongDeadline
   let stopping = false
   let fatalError = false
   let connected = false
@@ -36,7 +38,9 @@ function createPeerSession({
   function connect() {
     if (stopping || fatalError) return
 
+    let trace = () => {}
     const nextSocket = connectToRelay(config, {}, () => {
+      trace('registration-sent')
       enableSocketKeepAlive(nextSocket)
       const message = {
         protocolVersion: PROTOCOL_VERSION,
@@ -48,11 +52,17 @@ function createPeerSession({
       if (uuid) message.uuid = uuid
       writeMessage(nextSocket, JSON.stringify(message))
     })
-    const clearReadinessDeadline = startSocketDeadline(nextSocket, config.handshakeTimeout)
+    trace = traceSocket(nextSocket, `${type}-control`)
+    const clearReadinessDeadline = startSocketDeadline(nextSocket, config.handshakeTimeout, () => {
+      trace('registration-timeout', { timeoutMs: config.handshakeTimeout })
+    })
 
     const decodeMessage = createMessageDecoder(
-      data => handleMessage(nextSocket, data, clearReadinessDeadline),
-      () => nextSocket.destroy()
+      data => handleMessage(nextSocket, data, clearReadinessDeadline, trace),
+      () => {
+        trace('invalid-control-frame')
+        nextSocket.destroy()
+      }
     )
     socket = nextSocket
 
@@ -72,7 +82,7 @@ function createPeerSession({
     })
   }
 
-  function handleMessage(messageSocket, data, clearReadinessDeadline) {
+  function handleMessage(messageSocket, data, clearReadinessDeadline, trace) {
     if (messageSocket !== socket) return
     const message = tryParseJSON(data)
     if (!message || typeof message !== 'object') return messageSocket.destroy()
@@ -84,6 +94,7 @@ function createPeerSession({
 
     if (!connected && isRegistration(message)) {
       clearReadinessDeadline()
+      trace('relay-registered')
       connected = true
       backoff.reset()
       startPinger(messageSocket)
@@ -92,7 +103,12 @@ function createPeerSession({
       return messageSocket.destroy()
     }
 
-    if (message.pong) return
+    if (message.pong) {
+      clearTimeout(pongDeadline)
+      pongDeadline = undefined
+      log.debug(new Date().toISOString(), errorLabel, 'pong-received')
+      return
+    }
     onMessage(message, {
       disconnect() {
         messageSocket.destroy()
@@ -104,6 +120,7 @@ function createPeerSession({
   function connectWithDelay(delay) {
     if (stopping || fatalError) return
     if (reconnectTimer) clearTimeout(reconnectTimer)
+    log.debug(new Date().toISOString(), errorLabel, 'reconnect-scheduled', { delayMs: delay })
     reconnectTimer = setTimeout(() => {
       reconnectTimer = undefined
       connect()
@@ -113,11 +130,19 @@ function createPeerSession({
   function startPinger(activeSocket) {
     clearPinger()
     pinger = setInterval(() => {
+      if (pongDeadline) return
+      log.debug(new Date().toISOString(), errorLabel, 'ping-sent')
+      pongDeadline = setTimeout(() => {
+        log.info(`${errorLabel}: relay pong timed out; reconnecting`)
+        activeSocket.destroy()
+      }, config.heartbeatTimeout ?? 15_000)
       writeMessage(activeSocket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ping: Math.random() }))
-    }, 15_000)
+    }, config.heartbeatInterval ?? 5_000)
   }
 
   function clearPinger() {
+    clearTimeout(pongDeadline)
+    pongDeadline = undefined
     if (pinger) clearInterval(pinger)
     pinger = undefined
   }
