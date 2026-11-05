@@ -2,7 +2,7 @@
 
 Only user-visible changes are listed here.
 
-## Unreleased
+## 0.8.0
 
 ### Breaking
 
