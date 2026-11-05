@@ -81,8 +81,8 @@
 
 ### Added
 
-- Added TLS support for client and agent to connect to server that is behind TLS Proxy (HAProxy).
-  See more in [README.md](README.md#Using-TLS-and-proxy)
+- Added TLS support for agents and clients connecting through an HAProxy TLS
+  endpoint. See [Deployment](docs/DEPLOYMENT.md).
 
 ## 0.2.0
 
@@ -119,6 +119,7 @@
 
 ## 0.1.0
 
-- Reworked almost the entire project: networking reliability, lifecycle handling, configuration, tests, CI, dependencies, and documentation.
+- Reworked networking reliability, lifecycle handling, configuration, tests,
+  CI, dependencies, and documentation.
 - Introduced protocol version 3 with one shared relay TCP port and expiring,
   single-use tunnel tickets; older servers, agents, and clients are incompatible.

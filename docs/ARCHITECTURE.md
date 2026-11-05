@@ -1,23 +1,18 @@
 # Architecture
 
-`node-tunnel` connects a local client to a private target through a public relay.
+`node-tunnel` connects a local client to a private target through a public
+relay. The client and agent make outbound connections; the relay never connects
+to the target.
 
 ```text
 Client <──> Relay <──> Agent <──> Target
 ```
 
-The client and agent both make outbound connections to the relay. The relay does
-not connect directly to the target.
+## Connection flow
 
-## Connections
-
-The relay exposes a single TCP port for both control and tunnel data.
-
-Each client and agent keeps one long-lived control connection to the relay.
-Control connections are used for registration, tunnel requests, keepalive, and
-ticket exchange.
-
-Each tunnel uses two additional data connections:
+The relay uses one TCP port for control and tunnel data. Every client and agent
+keeps one control connection for registration, tunnel requests, heartbeats, and
+ticket exchange. Each active tunnel adds two data connections:
 
 ```text
 Client ──data──> Relay <──data── Agent ──> Target
@@ -25,19 +20,37 @@ Client ──data──> Relay <──data── Agent ──> Target
 
 When a client requests a tunnel:
 
-1. The relay creates a random, short-lived ticket.
-2. The ticket is sent to the client and agent over their control connections.
-3. Both peers open a data connection to the relay using that ticket.
-4. The relay validates and pairs the two connections.
-5. The relay sends a readiness acknowledgement to both peers.
-6. Application bytes are then forwarded in both directions.
+1. The relay creates a short-lived ticket and sends it to both peers.
+2. Each peer opens a data connection using that ticket.
+3. The relay validates and pairs the connections.
+4. Both peers receive a readiness acknowledgement.
+5. Application bytes flow in both directions.
 
-Tickets are single-use, expire automatically, and are bound to the current
-client and agent sessions.
+Tickets are random, single-use, expiring, and bound to the current client and
+agent sessions.
 
-## TLS
+## Components
 
-Client and agent connections can use TLS.
+- **Relay** registers routes, issues tickets, and pairs data connections.
+- **Agent** connects tunnel traffic to the private target.
+- **Client** exposes a local listener and requests tunnels.
+- **Peer session** owns control framing, heartbeats, and reconnects.
+- **Data transport** owns ticket matching and tunnel lifecycle.
+- **Data readiness** validates setup and replaces setup listeners with the
+  socket bridge after relay acknowledgement.
+- **Socket bridge** pipes TCP/TLS bytes while preserving backpressure,
+  handshake remainders, and half-closes.
+
+Each relay route has one agent and a map of clients. Replacing a control session
+cancels its pending tickets; established streams survive session replacement.
+An agent disconnect closes its active streams and marks clients unready. Those
+clients stay registered and become ready when a replacement agent arrives.
+
+Applications capture their control key and logging settings at creation. Module
+imports do not read environment-dependent settings. Both frame decoders use one
+parser that scans chunks once and copies fragmented frames only when complete.
+
+## TLS boundary
 
 The recommended deployment terminates TLS at HAProxy:
 
@@ -46,43 +59,5 @@ Client ─TLS─> HAProxy ─TCP─> Relay
 Agent  ─TLS─> HAProxy ─TCP─> Relay
 ```
 
-HAProxy listens on the public TLS port and forwards node-tunnel traffic to the
-relay on localhost.
-
-TLS protects traffic between each peer and the public endpoint. It is not
-end-to-end encryption between the client and agent.
-
-See [SECURITY.md](SECURITY.md) for the trust model and security limitations.
-
-## Main components
-
-- **Relay** — registers routes, creates tunnel tickets, pairs data connections,
-  and forwards traffic.
-- **Agent** — registers a route and connects tunnel traffic to the private
-  target.
-- **Client** — exposes a local listener and requests tunnels through the relay.
-- **Peer session** — manages control connections, framing, keepalive, and
-  reconnects.
-- **Data transport** — manages tunnel tickets, data connection matching, and
-  tunnel lifecycle.
-- **Data readiness** — shares peer readiness validation, deadlines, and setup
-  failure cleanup between the client and agent, then replaces setup listeners
-  with the socket bridge once readiness is confirmed.
-- **Socket bridge** — forwards TCP/TLS bytes using native socket pipes, preserving
-  backpressure, handshake remainders, and half-closes.
-
-Each relay route stores one agent socket and a map of client sockets. Replacing a
-control session cancels its pending tickets; established streams survive session
-replacement. A pending ticket owns the relay's pairing deadline, and pairing
-clears that deadline before forwarding starts.
-
-Agent disconnection cancels its pending tickets and closes its active streams.
-Client control connections remain registered with readiness set to false; a new
-agent registration restores their readiness without reconnecting those clients.
-
-Each application captures its own control key and logging settings at creation.
-Module imports do not read or validate keys or initialize environment-dependent
-logging. Both frame decoders share one parser that scans incoming chunks once
-and assembles a fragmented frame only when its delimiter arrives.
-
-Control and data use separate connections but share the same relay listener.
+This protects peer-to-proxy traffic but is not end-to-end encryption. See
+[Security](SECURITY.md) and [Deployment](DEPLOYMENT.md).

@@ -1,7 +1,7 @@
 {
   "name": "node-tunnel",
   "version": "0.7.0",
-  "description": "Expose TCP services behind NAT through a relay on public a host",
+  "description": "Expose TCP services behind NAT through a relay on a public host",
   "main": "relay.js",
   "exports": {
     ".": "./relay.js",
@@ -29,6 +29,8 @@
     "README.md",
     "docs/ARCHITECTURE.md",
     "docs/BENCHMARK.md",
+    "docs/CONFIGURATION.md",
+    "docs/DEPLOYMENT.md",
     "docs/SECURITY.md",
     "CHANGELOG.md",
     "LICENSE"
