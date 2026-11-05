@@ -7,26 +7,22 @@ const { loadEnvironment, getRelayConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
-const { traceSocket, traceTunnel } = require('./diagnostics')
+const { createDiagnostics } = require('./diagnostics')
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES, ERRORS } = require('./protocol')
-const {
-  tryParseJSON,
-  log,
-  verifyDataJson,
-  writeMessage,
-  createMessageDecoder,
-  createFirstMessageDecoder
-} = require('./utils')
+const { tryParseJSON, createMessaging } = require('./utils')
 const { enableSocketKeepAlive, startSocketDeadline, stopListening, destroySockets, runCli } = require('./lifecycle')
 const { createTcpDataTransport } = require('./tcp-data-transport')
 const { CLIENT, AGENT } = TYPES
 
 function createRelay(config = getRelayConfig()) {
+  const messaging = createMessaging(config)
+  const { log, sendJson, createMessageDecoder, createFirstMessageDecoder } = messaging
+  const { traceSocket, traceTunnel } = createDiagnostics(log)
   const events = new EventEmitter()
   const routes = new Map()
   const controlSockets = new Set()
   const handshakeSockets = new Set()
-  const dataTransport = createTcpDataTransport(config)
+  const dataTransport = createTcpDataTransport(config, messaging)
 
   let relayRelay
   let started = false
@@ -142,7 +138,12 @@ function createRelay(config = getRelayConfig()) {
   }
 
   function registerControlSocket(socket, message, remainder) {
-    if (!verifyDataJson(message) || !message.name) return socket.destroy()
+    if (
+      (message.type !== CLIENT && message.type !== AGENT) ||
+      !isIdentifier(message.name) ||
+      (message.uuid !== undefined && !isIdentifier(message.uuid))
+    )
+      return socket.destroy()
 
     let route = routes.get(message.name)
     if (!route) {
@@ -220,21 +221,16 @@ function createRelay(config = getRelayConfig()) {
       sendJson(socket, { error: ERRORS.VERSION_MISMATCH, receivedProtocolVersion: message.protocolVersion ?? null })
       return socket.end()
     }
-    if (message.ping) return sendJson(socket, { pong: Math.random() })
+    if (message.ping) return sendJson(socket, { pong: true })
 
     const cancelTicket = message.cancelTunnel?.ticket
-    if (typeof cancelTicket === 'string' && cancelTicket.length > 0 && cancelTicket.length <= 128) {
+    if (isIdentifier(cancelTicket)) {
       dataTransport.cancelPendingTunnel(cancelTicket, socket, 'peer-cancelled')
       return
     }
 
     const requestId = message.openTunnel?.requestId
-    if (
-      socket.cProps?.type !== CLIENT ||
-      typeof requestId !== 'string' ||
-      requestId.length === 0 ||
-      requestId.length > 128
-    ) {
+    if (socket.cProps?.type !== CLIENT || !isIdentifier(requestId)) {
       return socket.destroy()
     }
     openTunnel(socket, requestId)
@@ -282,8 +278,7 @@ function createRelay(config = getRelayConfig()) {
       route.agent = undefined
       if (!closing) {
         for (const client of route.clients.values()) {
-          sendJson(client, { agentDied: true })
-          client.end()
+          notifyRegistration(client, route)
         }
         dataTransport.closeAgentSession(socket)
       }
@@ -299,11 +294,11 @@ function createRelay(config = getRelayConfig()) {
 
     closePromise = (async () => {
       await startPromise?.catch(() => {})
-      stopListening(relayRelay)
+      const listenerClosed = stopListening(relayRelay)
       await dataTransport.close({ force, timeout: config.shutdownTimeout })
       await Promise.all([destroySockets(handshakeSockets), destroySockets(controlSockets)])
 
-      await new Promise(resolve => setImmediate(resolve))
+      await listenerClosed
       started = false
       log.info('Relay stopped. Connections closed:', controlSockets.size + dataTransport.getState().dataSockets)
     })()
@@ -334,8 +329,8 @@ function createRelay(config = getRelayConfig()) {
   return Object.assign(events, { start, close, getState })
 }
 
-function sendJson(socket, data) {
-  return writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...data }))
+function isIdentifier(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 128
 }
 
 module.exports = { createRelay }

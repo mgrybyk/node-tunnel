@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Require a configured 32-byte control key; remove the built-in fallback key.
+  Explicitly requested environment files must exist. An absent implicit `.env`
+  remains optional when configuration is supplied through the environment.
+- Capture encryption and logging settings per application at factory creation,
+  allowing independent keys and diagnostics in one process without import-order
+  dependence. API options accept `cryptKey`, `logDebug`, and `logError`.
+- Keep client control connections registered while their agent is offline, and
+  update readiness when the agent returns instead of reconnecting every client.
+- Share frame parsing and copy fragmented frames once instead of repeatedly
+  copying and scanning their accumulated contents. Wire encoding is unchanged.
+- Share data-setup cleanup, remove the redundant target-connect deadline and
+  duplicate cancellations, and use boolean heartbeat messages.
+- Await listener closure during shutdown instead of delaying an event-loop turn.
+
+### Fixed
+
+- Reject invalid route names, peer identifiers, and non-boolean data readiness
+  before they can advance connection setup.
+- Reject agent startup while shutdown is already in progress.
+
 ## 0.7.0
 
 ### Breaking changes

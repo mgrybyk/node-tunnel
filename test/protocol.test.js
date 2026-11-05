@@ -7,7 +7,7 @@ const { spawnSync } = require('node:child_process')
 
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
-const { crypt, writeMessage, createMessageDecoder, createFirstMessageDecoder } = require('../utils')
+const { crypt, writeMessage, createMessageDecoder, createFirstMessageDecoder } = require('../utils').createMessaging()
 const { getRelayConfig, readPort } = require('../config')
 
 test('control decoder handles fragmented and coalesced frames', () => {
@@ -91,6 +91,32 @@ for (const [name, createDecoder] of Object.entries({
   control: createMessageDecoder,
   first: createFirstMessageDecoder
 })) {
+  test(`${name} decoder bounds copying and scanning under heavy fragmentation`, t => {
+    const payload = 'x'.repeat(96 * 1024)
+    const frame = Buffer.from(`${crypt.encrypt(payload)}\n`)
+    const concat = Buffer.concat
+    const indexOf = Buffer.prototype.indexOf
+    let copied = 0
+    let scanned = 0
+    t.mock.method(Buffer, 'concat', (buffers, ...args) => {
+      copied += buffers.reduce((sum, buffer) => sum + buffer.length, 0)
+      return concat(buffers, ...args)
+    })
+    t.mock.method(Buffer.prototype, 'indexOf', function (value, offset = 0) {
+      scanned += this.length - offset
+      return indexOf.call(this, value, offset)
+    })
+    const messages = []
+    const decode = createDecoder(
+      message => messages.push(message),
+      () => assert.fail('valid fragmented frame rejected')
+    )
+    for (let offset = 0; offset < frame.length; offset += 17) decode(frame.subarray(offset, offset + 17))
+    assert.deepEqual(messages, [payload])
+    assert.ok(copied < 2 * frame.length, `${copied} copied bytes for ${frame.length} wire bytes`)
+    assert.equal(scanned, frame.length)
+  })
+
   test(`${name} decoder rejects oversized frames regardless of fragmentation`, async t => {
     const frame = Buffer.from(`${crypt.encrypt('x'.repeat(1024 * 1024))}\n`)
     for (const splitAt of [frame.length, frame.length - 1, 100]) {
@@ -154,7 +180,7 @@ test('relay configuration exposes only the shared relay port', () => {
 })
 
 test('runtime startup rejects a crypt key with the wrong byte length', () => {
-  const result = spawnSync(process.execPath, ['-e', 'require("./utils")'], {
+  const result = spawnSync(process.execPath, ['-e', 'require("./relay").createRelay()'], {
     cwd: path.resolve(__dirname, '..'),
     env: { ...process.env, N_T_CRYPT_KEY: 'too-short' },
     encoding: 'utf8'

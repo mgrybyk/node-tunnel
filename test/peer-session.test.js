@@ -10,7 +10,7 @@ process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
 const { createPeerSession } = require('../peer-session')
 const { PROTOCOL_VERSION, TYPES } = require('../protocol')
-const { crypt } = require('../utils')
+const { crypt } = require('../utils').createMessaging()
 
 test('TLS control sessions become connected only after relay registration', async t => {
   const sockets = []

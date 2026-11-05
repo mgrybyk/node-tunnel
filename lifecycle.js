@@ -35,8 +35,13 @@ function createBackoff({ baseDelay, maxDelay, jitterPercent = 10, random = Math.
 }
 
 function stopListening(server) {
-  if (!server?.listening) return
-  server.close()
+  if (!server?.listening) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    server.close(error => {
+      if (error) reject(error)
+      else resolve()
+    })
+  })
 }
 
 function destroySockets(sockets) {

@@ -9,14 +9,23 @@ process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 const { createAgent } = require('../agent')
 const { createClient } = require('../client')
 const { PROTOCOL_VERSION } = require('../protocol')
-const { writeMessage, createFirstMessageDecoder, createMessageDecoder } = require('../utils')
+const { writeMessage, createFirstMessageDecoder, createMessageDecoder } = require('../utils').createMessaging()
 const { host, listen, closeServer, waitForCondition, reservePort } = require('../test-support/helpers')
 
 for (const role of ['agent', 'client']) {
-  for (const failure of ['stall', 'invalid version', 'invalid frame', 'FIN']) {
+  for (const failure of [
+    'stall',
+    'invalid version',
+    'invalid frame',
+    'invalid readiness',
+    'FIN',
+    ...(role === 'agent' ? ['target stall'] : [])
+  ]) {
     test(`${role} releases local sockets after data readiness failure: ${failure}`, { timeout: 5_000 }, async t => {
       const sockets = new Set()
       let dataPrefaces = 0
+      let cancellations = 0
+      let targetConnects = 0
       const track = socket => {
         sockets.add(socket)
         socket.on('error', () => {})
@@ -36,6 +45,7 @@ for (const role of ['agent', 'client']) {
               return writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION + 1, ready: true }))
             }
             if (failure === 'invalid frame') return socket.write('invalid-frame\n')
+            if (failure === 'invalid readiness') return send({ ready: 'yes' })
             if (failure === 'FIN') return socket.end()
             // Trickle an incomplete frame; incoming bytes must not extend the deadline.
             const timer = setInterval(() => socket.write('x'), 10)
@@ -49,6 +59,7 @@ for (const role of ['agent', 'client']) {
             createMessageDecoder(data => {
               const message = JSON.parse(data)
               if (message.openTunnel) send({ openTunnel: { ...message.openTunnel, ticket: 'test-ticket' } })
+              if (message.cancelTunnel) cancellations++
             })
           )
         })
@@ -79,13 +90,24 @@ for (const role of ['agent', 'client']) {
         reconnectJitterPercent: 0,
         shutdownTimeout: 0
       }
+      if (failure === 'target stall') {
+        const connect = net.Socket.prototype.connect
+        t.mock.method(net.Socket.prototype, 'connect', function (...args) {
+          if (args[0] === config.targetPort) {
+            targetConnects++
+            return this
+          }
+          return connect.apply(this, args)
+        })
+      }
       application = role === 'agent' ? createAgent(config) : createClient(config)
       await application.start()
       await waitForCondition(() => application.getState().ready)
       if (role === 'client') track(net.createConnection({ host, port: localPort, allowHalfOpen: true }))
-      await waitForCondition(() => dataPrefaces === 1)
+      await waitForCondition(() => (failure === 'target stall' ? targetConnects === 1 : dataPrefaces === 1))
       await waitForCondition(() => application.getState().dataConnections === 0)
       await waitForCondition(() => application.getState().localConnections === 0)
+      await waitForCondition(() => cancellations === 1)
       assert.equal(application.getState().connected, true)
     })
   }

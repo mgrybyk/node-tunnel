@@ -1,15 +1,17 @@
 'use strict'
 
 const crypto = require('node:crypto')
-const { traceTunnel } = require('./diagnostics')
-const { PROTOCOL_VERSION, TYPES } = require('./protocol')
-const { log, writeMessage } = require('./utils')
+const { createDiagnostics } = require('./diagnostics')
+const { TYPES } = require('./protocol')
+const { createMessaging } = require('./utils')
 const { bridgeSockets } = require('./socket-bridge')
 const { destroySockets, waitForSockets } = require('./lifecycle')
 
 const MAX_PENDING_TUNNELS = 1024
 
-function createTcpDataTransport(config) {
+function createTcpDataTransport(config, messaging = createMessaging(config)) {
+  const { log, sendJson } = messaging
+  const { traceTunnel } = createDiagnostics(log)
   const pendingTunnels = new Map()
   const activeTunnels = new Set()
   const dataSockets = new Set()
@@ -167,10 +169,6 @@ function isDataMessage(message) {
     typeof message.ticket === 'string' &&
     message.ticket.length > 0
   )
-}
-
-function sendJson(socket, data) {
-  return writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...data }))
 }
 
 module.exports = { MAX_PENDING_TUNNELS, createTcpDataTransport }

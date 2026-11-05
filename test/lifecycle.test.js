@@ -13,7 +13,7 @@ const { createAgent } = require('../agent')
 const { createClient } = require('../client')
 const { TCP_KEEP_ALIVE_INITIAL_DELAY, enableSocketKeepAlive, createBackoff } = require('../lifecycle')
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES } = require('../protocol')
-const { writeMessage, log } = require('../utils')
+const { writeMessage } = require('../utils').createMessaging()
 const { createMessageQueue } = require('../test-support/message-queue')
 const {
   host,
@@ -218,6 +218,76 @@ test('a paired stream remains open beyond the handshake timeout', { timeout: 10_
   assert.equal(relay.getState().dataSockets, 2)
   assert.equal(agent.getState().dataConnections, 1)
   assert.equal(client.getState().dataConnections, 1)
+})
+
+test('agent outages preserve the client control socket and recover with an explicit application key', {
+  timeout: 10_000
+}, async t => {
+  silenceInfoLogs(t)
+  const backend = net.createServer({ allowHalfOpen: true }, socket => {
+    socket.on('error', () => {})
+    socket.pipe(socket)
+  })
+  await listen(backend)
+  t.after(() => closeServer(backend))
+  const ports = await reserveTopologyPorts(1)
+  const accepted = []
+  const createServer = net.createServer
+  t.mock.method(net, 'createServer', (...args) => {
+    const server = createServer(...args)
+    server.on('connection', socket => accepted.push(socket))
+    return server
+  })
+  const cryptKey = 'application-key-independent-0123'
+  const relay = createRelay({ ...serverConfig(ports), cryptKey })
+  const agentConfig = peerConfig(ports, {
+    cryptKey,
+    name: 'agent-outage',
+    targetHost: host,
+    targetPort: backend.address().port
+  })
+  const client = createClient(
+    peerConfig(ports, {
+      cryptKey,
+      name: 'agent-outage',
+      localHost: host,
+      localPort: ports.clients[0]
+    })
+  )
+  const agents = [createAgent(agentConfig)]
+  t.after(async () => {
+    await Promise.all([client.close({ force: true }), ...agents.map(agent => agent.close({ force: true }))])
+    await relay.close({ force: true })
+  })
+  await relay.start()
+  await agents[0].start()
+  await client.start()
+  await waitForCondition(() => client.getState().ready)
+  const controlSocket = accepted.find(socket => socket.cProps?.type === TYPES.CLIENT)
+  assert.ok(controlSocket)
+  const uuid = controlSocket.cProps.uuid
+  for (let cycle = 0; cycle < 2; cycle++) {
+    const payload = Buffer.from(`before outage ${cycle}`)
+    assert.deepEqual(await requestTunnel(ports.clients[0], payload), payload)
+    await agents.at(-1).close({ force: true })
+    await waitForCondition(() => !client.getState().ready)
+    assert.equal(client.getState().connected, true)
+    assert.equal(controlSocket.destroyed, false)
+    assert.equal(relay.getState().serviceSockets, 1)
+    assert.equal(client.getState().pendingLocalConnections, 0)
+    const rejected = net.createConnection({ host, port: ports.clients[0] })
+    rejected.on('error', () => {})
+    t.after(() => rejected.destroy())
+    await waitForSocketClose(rejected)
+    const replacement = createAgent(agentConfig)
+    agents.push(replacement)
+    await replacement.start()
+    await waitForCondition(() => client.getState().ready)
+    assert.equal(controlSocket.cProps.uuid, uuid)
+    assert.equal(controlSocket.destroyed, false)
+    const after = Buffer.from(`after outage ${cycle}`)
+    assert.deepEqual(await requestTunnel(ports.clients[0], after), after)
+  }
 })
 
 test('relay removes empty connection-name state after client churn', { timeout: 10_000 }, async t => {
@@ -426,7 +496,7 @@ function registerControl(port, type, name) {
 }
 
 function silenceInfoLogs(t) {
-  t.mock.method(log, 'info', () => {})
+  t.mock.method(console, 'log', () => {})
 }
 
 test('relay destroys a registered control connection when its idle timeout expires', { timeout: 5_000 }, async t => {

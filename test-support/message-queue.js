@@ -1,12 +1,12 @@
 'use strict'
 
-const { createMessageDecoder } = require('../utils')
+const { createMessaging } = require('../utils')
 
-function createMessageQueue(socket, timeout = 3_000) {
+function createMessageQueue(socket, timeout = 3_000, messaging = createMessaging()) {
   const messages = []
   const waiters = []
   let failure
-  const decode = createMessageDecoder(
+  const decode = messaging.createMessageDecoder(
     value => {
       if (failure) return
       try {

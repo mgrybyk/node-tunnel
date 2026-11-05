@@ -10,14 +10,14 @@ process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
 const { createRelay } = require('../relay')
 const { PROTOCOL_VERSION, TYPES, CONNECTION_KINDS } = require('../protocol')
-const { crypt, writeMessage, createFirstMessageDecoder, log } = require('../utils')
+const { crypt, writeMessage, createFirstMessageDecoder } = require('../utils').createMessaging()
 const { createMessageQueue } = require('../test-support/message-queue')
 const { host, reservePort, closeServer, waitForSocketClose, waitForCondition } = require('../test-support/helpers')
 
 test('one relay port pairs ticketed data sockets, preserves preface remainders, and rejects replay', {
   timeout: 5_000
 }, async t => {
-  t.mock.method(log, 'info', () => {})
+  t.mock.method(console, 'log', () => {})
   const reservation = await reservePort()
   const port = reservation.port
   await closeServer(reservation.server)
@@ -138,7 +138,7 @@ test('one relay port pairs ticketed data sockets, preserves preface remainders, 
 test('client replacement cancels pending tickets and routes keep session identities isolated', {
   timeout: 5_000
 }, async t => {
-  t.mock.method(log, 'info', () => {})
+  t.mock.method(console, 'log', () => {})
   const reservation = await reservePort()
   const port = reservation.port
   await closeServer(reservation.server)
@@ -190,6 +190,55 @@ test('client replacement cancels pending tickets and routes keep session identit
   send(replacement, { ping: true })
   await replacement.messages.next()
   assert.equal(relay.getState().pendingTunnels, 0)
+})
+
+test('invalid registration fields are rejected before allocating a route', { timeout: 5_000 }, async t => {
+  t.mock.method(console, 'log', () => {})
+  const reservation = await reservePort()
+  const port = reservation.port
+  await closeServer(reservation.server)
+  const relay = createRelay({
+    serviceHost: host,
+    servicePort: port,
+    handshakeTimeout: 500,
+    controlIdleTimeout: 5_000,
+    shutdownTimeout: 0
+  })
+  t.after(() => relay.close({ force: true }))
+  await relay.start()
+  for (const fields of [
+    { name: {} },
+    { name: 42 },
+    { name: '' },
+    { name: 'x'.repeat(129) },
+    { uuid: {} },
+    { uuid: 42 },
+    { uuid: '' },
+    { uuid: 'x'.repeat(129) },
+    { uuid: null },
+    { type: 'unknown' }
+  ]) {
+    const socket = await connectData(port)
+    t.after(() => socket.destroy())
+    socket.on('end', () => socket.end())
+    socket.resume()
+    writeMessage(
+      socket,
+      JSON.stringify({
+        protocolVersion: PROTOCOL_VERSION,
+        kind: CONNECTION_KINDS.CONTROL,
+        type: TYPES.CLIENT,
+        name: 'valid-route',
+        ...fields
+      })
+    )
+    await waitForSocketClose(socket)
+    assert.equal(relay.getState().connectionNames, 0)
+    assert.equal(relay.getState().serviceSockets, 0)
+  }
+  const valid = await connectControl(port, TYPES.CLIENT, 'x'.repeat(128), 'u'.repeat(128))
+  t.after(() => valid.socket.destroy())
+  assert.equal((await valid.messages.next()).registration.ready, false)
 })
 
 async function connectControl(port, type, name, uuid) {

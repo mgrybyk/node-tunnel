@@ -9,13 +9,13 @@ process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 const { createRelay } = require('../relay')
 const { getRelayConfig } = require('../config')
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES, ERRORS } = require('../protocol')
-const { writeMessage, createMessageDecoder, log } = require('../utils')
+const { writeMessage, createMessageDecoder } = require('../utils').createMessaging()
 const { host, waitForSocketClose } = require('../test-support/helpers')
 
 for (const rejection of ['version mismatch', 'duplicate agent']) {
   for (const action of ['deadline', 'forced shutdown']) {
     test(`relay releases a half-open ${rejection} connection on ${action}`, { timeout: 5_000 }, async t => {
-      t.mock.method(log, 'info', () => {})
+      t.mock.method(console, 'log', () => {})
       const accepted = []
       const peers = []
       let server

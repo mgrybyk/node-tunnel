@@ -9,8 +9,9 @@ const path = require('node:path')
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 process.env.N_T_LOG_DEBUG = 'true'
 
-const { traceSocket, tunnelReference } = require('../diagnostics')
-const { log } = require('../utils')
+const messaging = require('../utils').createMessaging()
+const { log } = messaging
+const { traceSocket, tunnelReference } = require('../diagnostics').createDiagnostics(log)
 
 function fields(line) {
   return JSON.parse(line.slice(line.indexOf('{')))
@@ -25,7 +26,8 @@ test('disabled diagnostics skip arguments, hashes, and socket listeners', () => 
     const assert = require('node:assert/strict')
     const { EventEmitter } = require('node:events')
     require('node:crypto').createHash = () => { throw new Error('unexpected debug hash') }
-    const diagnostics = require('./diagnostics')
+    const { log } = require('./utils').createMessaging()
+    const diagnostics = require('./diagnostics').createDiagnostics(log)
     const socket = new EventEmitter()
     let evaluated = 0
     diagnostics.traceSocket?.(socket, 'disabled', { ticket: String(++evaluated) })
@@ -85,7 +87,7 @@ test('tunnel diagnostics identify a missing peer without exposing the ticket', a
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const logs = []
   t.mock.method(log, 'debug', line => logs.push(line))
-  const transport = createTcpDataTransport({ handshakeTimeout: 3_000, shutdownTimeout: 0 })
+  const transport = createTcpDataTransport({ handshakeTimeout: 3_000, shutdownTimeout: 0 }, messaging)
   const ticket = transport.createPendingTunnel({})
   const socket = new EventEmitter()
   socket.destroy = () => {

@@ -1,10 +1,10 @@
 'use strict'
 
-function loadEnvironment(filePath = process.argv[2] || '.env') {
+function loadEnvironment(filePath) {
   try {
-    process.loadEnvFile(filePath)
+    process.loadEnvFile(filePath ?? '.env')
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error
+    if (filePath !== undefined || error.code !== 'ENOENT') throw error
   }
 }
 
@@ -40,6 +40,7 @@ function readCommonConfig(env = process.env) {
   )
 
   return {
+    ...readRuntimeConfig(env),
     relayHost: env.N_T_RELAY_HOST || '127.0.0.1',
     relayPort: readPort('N_T_RELAY_PORT', 1337, env),
     reconnectDelay,
@@ -54,11 +55,20 @@ function readCommonConfig(env = process.env) {
 
 function getRelayConfig(env = process.env) {
   return {
+    ...readRuntimeConfig(env),
     serviceHost: env.N_T_RELAY_BIND_HOST || '0.0.0.0',
     servicePort: readPort('N_T_RELAY_PORT', 1337, env),
     handshakeTimeout: readInteger('N_T_HANDSHAKE_TIMEOUT_MS', 3_000, { min: 100, max: 300_000 }, env),
     controlIdleTimeout: readInteger('N_T_CONTROL_IDLE_TIMEOUT_MS', 15_000, { min: 1_000, max: 3_600_000 }, env),
     shutdownTimeout: readInteger('N_T_SHUTDOWN_TIMEOUT_MS', 2_000, { min: 0, max: 300_000 }, env)
+  }
+}
+
+function readRuntimeConfig(env) {
+  return {
+    cryptKey: env.N_T_CRYPT_KEY,
+    logDebug: env.N_T_LOG_DEBUG === 'true',
+    logError: env.N_T_LOG_ERROR === 'true'
   }
 }
 

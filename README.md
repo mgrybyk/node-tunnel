@@ -111,6 +111,11 @@ ssh user@127.0.0.1 -p 8000
 The same pattern works for any TCP service: change the agent target port, the
 client's local port, and the route name.
 
+`N_T_CRYPT_KEY` is required and must contain exactly 32 UTF-8 bytes; there is no
+default key. An explicitly supplied environment file must exist. If no file is
+supplied, the default `.env` is optional and settings can come from the process
+environment.
+
 ### Using TLS and proxy
 
 Add to all agents and clients:
@@ -163,6 +168,11 @@ Set the relay control idle timeout above the heartbeat interval. Active data
 streams have no application idle cutoff, since TCP services can legitimately
 remain silent.
 
+When an agent disconnects, its clients keep their relay control connections and
+reject new local connections until the agent returns. Pending setups and streams
+belonging to that agent session are closed. The relay updates client readiness
+when a replacement agent registers.
+
 </details>
 
 ### Diagnosing TLS/proxy stalls
@@ -189,7 +199,8 @@ traces omit application payloads, encryption keys, and raw tickets.
 
 With `N_T_LOG_DEBUG=false`, these diagnostics install no socket listeners or
 timers, compute no tunnel hashes, and skip constructing debug fields. Logging
-settings are read at startup; restart the process after changing them.
+settings are captured when each application is created; restart the process
+after changing them.
 
 These traces can distinguish timing/backpressure bugs from proxy interruptions;
 they do not by themselves establish that Zscaler caused a failure. Control frames
@@ -215,6 +226,12 @@ const relay = createRelay(options)
 await relay.start()
 await relay.close()
 ```
+
+Config builders read the environment when called. Factories capture the control
+key and logging settings when each application is created. You can also supply
+`cryptKey` (a 32-byte UTF-8 string), `logDebug`, and `logError` directly in options;
+omitted values use the process environment. Separate applications in the same
+process can use different keys and logging settings.
 
 | Entry point          | Export                             |
 | -------------------- | ---------------------------------- |

@@ -8,15 +8,17 @@ const { loadEnvironment, getClientConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
-const { traceSocket } = require('./diagnostics')
-const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES } = require('./protocol')
-const { log, writeMessage } = require('./utils')
+const { createDiagnostics } = require('./diagnostics')
+const { CONNECTION_KINDS, TYPES } = require('./protocol')
+const { createMessaging } = require('./utils')
 const { enableSocketKeepAlive, stopListening, destroySockets, waitForSockets, runCli } = require('./lifecycle')
-const { bridgeSockets } = require('./socket-bridge')
-const { waitForDataReady } = require('./data-readiness')
+const { bridgeWhenReady } = require('./data-readiness')
 const { createPeerSession } = require('./peer-session')
 
 function createClient(config = getClientConfig()) {
+  const messaging = createMessaging(config)
+  const { log, sendJson } = messaging
+  const { traceSocket } = createDiagnostics(log)
   const events = new EventEmitter()
   const localConnections = new Set()
   const dataConnections = new Set()
@@ -32,6 +34,7 @@ function createClient(config = getClientConfig()) {
   let ready = false
   const controlSession = createPeerSession({
     config,
+    messaging,
     type: TYPES.CLIENT,
     name: config.name,
     getUuid: () => serviceUuid,
@@ -125,48 +128,33 @@ function createClient(config = getClientConfig()) {
 
     const dataClient = connectToRelay(config, { allowHalfOpen: true }, () => {
       enableSocketKeepAlive(dataClient)
-      writeMessage(
-        dataClient,
-        JSON.stringify({
-          protocolVersion: PROTOCOL_VERSION,
-          kind: CONNECTION_KINDS.DATA,
-          type: TYPES.CLIENT,
-          ticket
-        })
-      )
+      sendJson(dataClient, {
+        kind: CONNECTION_KINDS.DATA,
+        type: TYPES.CLIENT,
+        ticket
+      })
     })
     const trace = traceSocket?.(dataClient, 'client-data', { ticket, requestId })
-    let bridged = false
     dataConnections.add(dataClient)
-    waitForDataReady(dataClient, { timeout: config.handshakeTimeout, trace }, remainder => {
-      bridgeSockets(dataClient, localSocket, { leftInitialData: remainder })
-      bridged = true
+    bridgeWhenReady(dataClient, localSocket, {
+      messaging,
+      timeout: config.handshakeTimeout,
+      trace,
+      onSetupFailed: () => controlSession.send({ cancelTunnel: { ticket } })
     })
 
     dataClient.on('error', error => log.err('DATA_CLIENT', error.name || error.code, error.message))
     dataClient.on('close', () => {
       dataConnections.delete(dataClient)
-      if (!bridged && !localSocket.destroyed) {
-        localSocket.destroy()
-      }
-    })
-
-    localSocket.on('close', () => {
-      if (!bridged && !dataClient.destroyed) {
-        dataClient.destroy()
-      }
     })
   }
 
   function onMessage(message, controls) {
     if (message.error) return controls.fail(message.error)
-    if (message.agentDied) {
-      ready = false
-      return
-    }
     if (message.registration) {
       serviceUuid = message.registration.uuid
       ready = Boolean(message.registration.ready)
+      if (!ready) closePendingLocalConnections()
       if (ready) log.info('Agent found, ready!')
       return
     }
@@ -195,11 +183,11 @@ function createClient(config = getClientConfig()) {
 
     closePromise = (async () => {
       await startPromise?.catch(() => {})
-      stopListening(localServer)
+      const listenerClosed = stopListening(localServer)
       if (!force) await waitForSockets(dataConnections, config.shutdownTimeout)
       await Promise.all([destroySockets(localConnections), destroySockets(dataConnections)])
       await controlSession.close()
-      await new Promise(resolve => setImmediate(resolve))
+      await listenerClosed
       started = false
       log.info(`Client stopped. Local connections: ${localConnections.size}, data connections: ${dataConnections.size}`)
     })()

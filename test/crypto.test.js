@@ -5,7 +5,7 @@ const assert = require('node:assert/strict')
 
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
-const { crypt } = require('../utils')
+const { crypt } = require('../utils').createMessaging()
 
 test('an encrypted control message decrypts to its original value', () => {
   const message = JSON.stringify({

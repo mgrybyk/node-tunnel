@@ -7,7 +7,7 @@ const net = require('node:net')
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
 const { PROTOCOL_VERSION, ERRORS } = require('../protocol')
-const { writeMessage, createMessageDecoder } = require('../utils')
+const { writeMessage, createMessageDecoder } = require('../utils').createMessaging()
 const {
   host,
   startChild,

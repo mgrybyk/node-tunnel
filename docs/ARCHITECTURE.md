@@ -66,7 +66,8 @@ See [SECURITY.md](SECURITY.md) for the trust model and security limitations.
 - **Data transport** — manages tunnel tickets, data connection matching, and
   tunnel lifecycle.
 - **Data readiness** — shares peer readiness validation, deadlines, and setup
-  listener cleanup between the client and agent.
+  failure cleanup between the client and agent, then replaces setup listeners
+  with the socket bridge once readiness is confirmed.
 - **Socket bridge** — forwards TCP/TLS bytes using native socket pipes, preserving
   backpressure, handshake remainders, and half-closes.
 
@@ -74,5 +75,14 @@ Each relay route stores one agent socket and a map of client sockets. Replacing 
 control session cancels its pending tickets; established streams survive session
 replacement. A pending ticket owns the relay's pairing deadline, and pairing
 clears that deadline before forwarding starts.
+
+Agent disconnection cancels its pending tickets and closes its active streams.
+Client control connections remain registered with readiness set to false; a new
+agent registration restores their readiness without reconnecting those clients.
+
+Each application captures its own control key and logging settings at creation.
+Module imports do not read or validate keys or initialize environment-dependent
+logging. Both frame decoders share one parser that scans incoming chunks once
+and assembles a fragmented frame only when its delimiter arrives.
 
 Control and data use separate connections but share the same relay listener.

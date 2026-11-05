@@ -1,13 +1,14 @@
 'use strict'
 
-const { debug, traceSocket } = require('./diagnostics')
+const { createDiagnostics } = require('./diagnostics')
 const { connectToRelay } = require('./relay-connection')
 const { PROTOCOL_VERSION, CONNECTION_KINDS } = require('./protocol')
-const { tryParseJSON, log, writeMessage, createMessageDecoder } = require('./utils')
+const { tryParseJSON, createMessaging } = require('./utils')
 const { enableSocketKeepAlive, startSocketDeadline, createBackoff, destroySockets } = require('./lifecycle')
 
 function createPeerSession({
   config,
+  messaging = createMessaging(config),
   type,
   name,
   getUuid,
@@ -17,6 +18,8 @@ function createPeerSession({
   onFatal,
   errorLabel = 'CONTROL_SOCKET'
 }) {
+  const { log, sendJson, createMessageDecoder } = messaging
+  const { debug, traceSocket } = createDiagnostics(log)
   const backoff = createBackoff({
     baseDelay: config.reconnectDelay,
     maxDelay: config.reconnectMaxDelay,
@@ -42,14 +45,13 @@ function createPeerSession({
     const nextSocket = connectToRelay(config, {}, () => {
       enableSocketKeepAlive(nextSocket)
       const message = {
-        protocolVersion: PROTOCOL_VERSION,
         kind: CONNECTION_KINDS.CONTROL,
         type,
         name
       }
       const uuid = getUuid()
       if (uuid) message.uuid = uuid
-      writeMessage(nextSocket, JSON.stringify(message))
+      sendJson(nextSocket, message)
     })
     trace = traceSocket?.(nextSocket, `${type}-control`)
     const clearReadinessDeadline = startSocketDeadline(
@@ -138,7 +140,7 @@ function createPeerSession({
         log.info(`${errorLabel}: relay pong timed out; reconnecting`)
         activeSocket.destroy()
       }, config.heartbeatTimeout ?? 15_000)
-      writeMessage(activeSocket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ping: Math.random() }))
+      sendJson(activeSocket, { ping: true })
     }, config.heartbeatInterval ?? 5_000)
   }
 
@@ -162,7 +164,7 @@ function createPeerSession({
   }
 
   function send(message) {
-    return writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...message }))
+    return sendJson(socket, message)
   }
 
   async function close() {

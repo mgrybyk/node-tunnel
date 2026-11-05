@@ -1,45 +1,52 @@
 'use strict'
 
 const { PROTOCOL_VERSION } = require('./protocol')
-const { tryParseJSON, createFirstMessageDecoder } = require('./utils')
+const { tryParseJSON } = require('./utils')
 const { startSocketDeadline } = require('./lifecycle')
+const { bridgeSockets } = require('./socket-bridge')
 
-function waitForDataReady(socket, { timeout, trace }, onReady) {
+function bridgeWhenReady(dataSocket, localSocket, { messaging, timeout, trace, onSetupFailed }) {
   const clearDeadline = startSocketDeadline(
-    socket,
+    dataSocket,
     timeout,
-    trace &&
-      (() => {
-        trace('data-readiness-timeout', { timeoutMs: timeout })
-      })
+    trace && (() => trace('data-readiness-timeout', { timeoutMs: timeout }))
   )
-  const decodeReady = createFirstMessageDecoder(
+  const decodeReady = messaging.createFirstMessageDecoder(
     (data, remainder) => {
       const message = tryParseJSON(data)
-      if (!message || message.protocolVersion !== PROTOCOL_VERSION || !message.ready) {
+      if (!message || message.protocolVersion !== PROTOCOL_VERSION || message.ready !== true) {
         trace?.('invalid-data-ready')
-        return socket.destroy()
+        return dataSocket.destroy()
       }
+      if (localSocket.destroyed) return dataSocket.destroy()
       trace?.('bridge-ready', { remainderBytes: remainder.length })
       cleanup()
-      onReady(remainder)
+      bridgeSockets(dataSocket, localSocket, { leftInitialData: remainder })
     },
     () => {
       trace?.('invalid-data-frame')
-      socket.destroy()
+      dataSocket.destroy()
     }
   )
-  const onEnd = () => socket.destroy()
-  socket.on('data', decodeReady)
-  socket.once('end', onEnd)
-  socket.once('close', cleanup)
+  const onEnd = () => dataSocket.destroy()
+  const onLocalClose = () => dataSocket.destroy()
+  const onDataClose = () => {
+    cleanup()
+    onSetupFailed?.()
+    localSocket.destroy()
+  }
+  dataSocket.on('data', decodeReady)
+  dataSocket.once('end', onEnd)
+  dataSocket.once('close', onDataClose)
+  localSocket.once('close', onLocalClose)
 
   function cleanup() {
     clearDeadline()
-    socket.off('data', decodeReady)
-    socket.off('end', onEnd)
-    socket.off('close', cleanup)
+    dataSocket.off('data', decodeReady)
+    dataSocket.off('end', onEnd)
+    dataSocket.off('close', onDataClose)
+    localSocket.off('close', onLocalClose)
   }
 }
 
-module.exports = { waitForDataReady }
+module.exports = { bridgeWhenReady }

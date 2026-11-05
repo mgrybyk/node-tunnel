@@ -8,8 +8,9 @@ process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
 const { createRelay } = require('../relay')
 const { createClient } = require('../client')
+const { createAgent } = require('../agent')
 const { getRelayConfig, getClientConfig } = require('../config')
-const { log } = require('../utils')
+
 const { closeServer, host, listen } = require('../test-support/helpers')
 
 for (const [name, createApplication, config] of [
@@ -49,8 +50,41 @@ for (const [name, createApplication, config] of [
     assert.equal(application.getState().started, false)
   })
 
+  test(`${name} shutdown waits for the listener close callback`, { timeout: 5_000 }, async t => {
+    const servers = observeListeners(t)
+    const application = createApplication(config)
+    let finishClose
+    t.after(async () => {
+      finishClose?.()
+      await application.close({ force: true })
+    })
+    await application.start()
+    const server = servers[0]
+    const close = server.close.bind(server)
+    let callbackReached
+    const listenerClosed = new Promise(resolve => {
+      callbackReached = resolve
+    })
+    t.mock.method(server, 'close', callback =>
+      close(error => {
+        finishClose = () => callback(error)
+        callbackReached()
+      })
+    )
+    let settled = false
+    const closing = application.close({ force: true }).then(() => {
+      settled = true
+    })
+    await listenerClosed
+    await Promise.resolve()
+    assert.equal(settled, false, 'close must wait for listener completion')
+    finishClose()
+    await closing
+    assert.equal(application.getState().started, false)
+  })
+
   test(`${name} can retry startup after its port becomes available`, { timeout: 5_000 }, async t => {
-    t.mock.method(log, 'info', () => {})
+    t.mock.method(console, 'log', () => {})
     const blocker = net.createServer()
     await listen(blocker)
     const port = blocker.address().port
@@ -70,8 +104,18 @@ for (const [name, createApplication, config] of [
   })
 }
 
+test('agent cannot restart while its shutdown is in progress', async t => {
+  t.mock.method(console, 'log', () => {})
+  const agent = createAgent()
+  await agent.start()
+  const closing = agent.close({ force: true })
+  t.after(() => closing)
+  await assert.rejects(agent.start(), /closing/)
+  await closing
+})
+
 function observeListeners(t) {
-  t.mock.method(log, 'info', () => {})
+  t.mock.method(console, 'log', () => {})
   const servers = []
   const createServer = net.createServer
   t.mock.method(net, 'createServer', (...args) => {

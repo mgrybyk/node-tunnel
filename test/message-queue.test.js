@@ -6,7 +6,7 @@ const { EventEmitter } = require('node:events')
 
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
-const { crypt } = require('../utils')
+const { crypt } = require('../utils').createMessaging()
 const { createMessageQueue } = require('../test-support/message-queue')
 
 const frame = value => Buffer.from(`${crypt.encrypt(value)}\n`)

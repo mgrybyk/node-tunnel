@@ -1,175 +1,136 @@
 'use strict'
 
 const crypto = require('node:crypto')
-const { TYPES } = require('./protocol')
+const { PROTOCOL_VERSION } = require('./protocol')
 
-const logDebug = process.env.N_T_LOG_DEBUG === 'true'
-const logError = process.env.N_T_LOG_ERROR === 'true'
-
-const log = {
-  info(...args) {
-    console.log('INFO:', ...args)
-  },
-  debug() {},
-  err() {}
-}
-
-if (logDebug) {
-  log.debug = (...args) => console.log(...args)
-}
-if (logError) {
-  log.err = (...args) => console.error('ERR:', ...args)
-}
-
-module.exports.tryParseJSON = json => {
+function tryParseJSON(json) {
   try {
     return JSON.parse(json)
-  } catch (_error) {
-    log.err('JSON', json)
+  } catch {
     return null
   }
 }
 
-module.exports.verifyDataJson = dataJson => {
-  if (!dataJson || typeof dataJson !== 'object' || (dataJson.type !== TYPES.CLIENT && dataJson.type !== TYPES.AGENT)) {
-    log.err('invalid message type')
-    return false
+function createMessaging(config = {}) {
+  const key = config.cryptKey ?? process.env.N_T_CRYPT_KEY
+  if (typeof key !== 'string' || Buffer.byteLength(key) !== 32) {
+    throw new Error('N_T_CRYPT_KEY must contain exactly 32 UTF-8 bytes')
+  }
+  const cryptKey = Buffer.from(key)
+  const log = {
+    info: (...args) => console.log('INFO:', ...args),
+    debug: (config.logDebug ?? process.env.N_T_LOG_DEBUG === 'true') ? (...args) => console.log(...args) : undefined,
+    err:
+      (config.logError ?? process.env.N_T_LOG_ERROR === 'true') ? (...args) => console.error('ERR:', ...args) : () => {}
   }
 
-  return true
-}
+  const cryptContext = Buffer.from('node-tunnel-control')
+  const cryptAlg = 'chacha20-poly1305'
+  const cryptVersion = 1
+  const ivLength = 12
+  const authTagLength = 16
 
-if (!process.env.N_T_CRYPT_KEY) {
-  console.log('WARNING: default CRYPT KEY is used!!!')
-}
+  const crypt = {
+    encrypt(str) {
+      try {
+        const iv = crypto.randomBytes(ivLength)
+        const cipher = crypto.createCipheriv(cryptAlg, cryptKey, iv, { authTagLength })
+        cipher.setAAD(cryptContext)
 
-const cryptKey = Buffer.from(process.env.N_T_CRYPT_KEY || 'b70231120900saamkb83gsc150f162fd')
-if (cryptKey.length !== 32) {
-  throw new Error('N_T_CRYPT_KEY must contain exactly 32 UTF-8 bytes')
-}
-const cryptContext = Buffer.from('node-tunnel-control')
-const cryptAlg = 'chacha20-poly1305'
-const cryptVersion = 1
-const ivLength = 12
-const authTagLength = 16
+        const encrypted = Buffer.concat([cipher.update(str, 'utf8'), cipher.final()])
 
-const crypt = {
-  encrypt(str) {
-    try {
-      const iv = crypto.randomBytes(ivLength)
-      const cipher = crypto.createCipheriv(cryptAlg, cryptKey, iv, { authTagLength })
-      cipher.setAAD(cryptContext)
+        return Buffer.concat([Buffer.from([cryptVersion]), iv, cipher.getAuthTag(), encrypted]).toString('base64')
+      } catch (e) {
+        log.err('ENC', e.message)
+        return null
+      }
+    },
+    decrypt(str) {
+      try {
+        const payload = Buffer.from(str, 'base64')
+        const encryptedOffset = 1 + ivLength + authTagLength
 
-      const encrypted = Buffer.concat([cipher.update(str, 'utf8'), cipher.final()])
+        if (payload.length < encryptedOffset || payload[0] !== cryptVersion) return null
 
-      return Buffer.concat([Buffer.from([cryptVersion]), iv, cipher.getAuthTag(), encrypted]).toString('base64')
-    } catch (e) {
-      log.err('ENC', e.message)
-      return null
-    }
-  },
-  decrypt(str) {
-    try {
-      const payload = Buffer.from(str, 'base64')
-      const encryptedOffset = 1 + ivLength + authTagLength
+        const iv = payload.subarray(1, 1 + ivLength)
+        const authTag = payload.subarray(1 + ivLength, encryptedOffset)
+        const encrypted = payload.subarray(encryptedOffset)
+        const decipher = crypto.createDecipheriv(cryptAlg, cryptKey, iv, { authTagLength })
 
-      if (payload.length < encryptedOffset || payload[0] !== cryptVersion) return null
+        decipher.setAAD(cryptContext)
+        decipher.setAuthTag(authTag)
 
-      const iv = payload.subarray(1, 1 + ivLength)
-      const authTag = payload.subarray(1 + ivLength, encryptedOffset)
-      const encrypted = payload.subarray(encryptedOffset)
-      const decipher = crypto.createDecipheriv(cryptAlg, cryptKey, iv, { authTagLength })
-
-      decipher.setAAD(cryptContext)
-      decipher.setAuthTag(authTag)
-
-      return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8')
-    } catch (e) {
-      log.err('DEC', e.message)
-      return null
+        return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8')
+      } catch (e) {
+        log.err('DEC', e.message)
+        return null
+      }
     }
   }
-}
-module.exports.crypt = crypt
 
-const messageDelimiter = 0x0a
-const maxMessageLength = 1024 * 1024
+  function writeMessage(socket, message) {
+    if (!socket || socket.destroyed || socket.writableEnded) return false
+    const encrypted = crypt.encrypt(message)
+    if (encrypted === null) return false
+    // A false write() result means queued with backpressure, not a failed send.
+    socket.write(`${encrypted}\n`)
+    return true
+  }
 
-module.exports.writeMessage = (socket, message) => {
-  if (!socket || socket.destroyed || socket.writableEnded) return false
+  function sendJson(socket, message) {
+    return writeMessage(socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...message }))
+  }
 
-  const encrypted = crypt.encrypt(message)
-  if (encrypted === null) return false
+  function createDecoder(onMessage, onInvalid, firstOnly) {
+    let fragments = []
+    let length = 0
+    let stopped = false
 
-  // A false write() result means queued with backpressure, not a failed send.
-  socket.write(`${encrypted}\n`)
-  return true
-}
+    return function decode(data) {
+      if (stopped) return
+      let offset = 0
+      while (offset < data.length) {
+        const delimiter = data.indexOf(0x0a, offset)
+        const end = delimiter < 0 ? data.length : delimiter
+        const fragment = data.subarray(offset, end)
+        length += fragment.length
+        if (length > 1024 * 1024) return invalid()
 
-module.exports.createMessageDecoder = (onMessage, onInvalid) => {
-  let pending = Buffer.alloc(0)
-  let stopped = false
-
-  return function decodeMessages(data) {
-    if (stopped) return
-    pending = Buffer.concat([pending, data])
-
-    let delimiterIndex = pending.indexOf(messageDelimiter)
-    while (delimiterIndex >= 0) {
-      if (delimiterIndex > maxMessageLength) return invalid()
-      const encrypted = pending.subarray(0, delimiterIndex).toString('ascii')
-      pending = pending.subarray(delimiterIndex + 1)
-
-      const message = crypt.decrypt(encrypted)
-      if (message === null) return invalid()
-      onMessage(message)
-      delimiterIndex = pending.indexOf(messageDelimiter)
+        if (delimiter < 0) {
+          fragments.push(fragment)
+          return
+        }
+        const frame = fragments.length ? Buffer.concat([...fragments, fragment], length) : fragment
+        fragments = []
+        length = 0
+        const message = crypt.decrypt(frame.toString('ascii'))
+        if (message === null) return invalid()
+        offset = delimiter + 1
+        if (firstOnly) {
+          stopped = true
+          onMessage(message, data.subarray(offset))
+          return
+        }
+        onMessage(message)
+      }
     }
 
-    if (pending.length > maxMessageLength) invalid()
+    function invalid() {
+      stopped = true
+      fragments = []
+      length = 0
+      onInvalid?.()
+    }
   }
 
-  function invalid() {
-    stopped = true
-    pending = Buffer.alloc(0)
-    if (onInvalid) onInvalid()
+  return {
+    log,
+    crypt,
+    writeMessage,
+    sendJson,
+    createMessageDecoder: (onMessage, onInvalid) => createDecoder(onMessage, onInvalid, false),
+    createFirstMessageDecoder: (onMessage, onInvalid) => createDecoder(onMessage, onInvalid, true)
   }
 }
 
-module.exports.createFirstMessageDecoder = (onMessage, onInvalid) => {
-  let pending = Buffer.alloc(0)
-  let completed = false
-
-  return function decodeFirstMessage(data) {
-    if (completed) return
-    pending = Buffer.concat([pending, data])
-
-    const delimiterIndex = pending.indexOf(messageDelimiter)
-    if (delimiterIndex < 0) {
-      if (pending.length > maxMessageLength) invalid()
-      return
-    }
-    if (delimiterIndex > maxMessageLength) return invalid()
-
-    completed = true
-    const encrypted = pending.subarray(0, delimiterIndex).toString('ascii')
-    const remainder = pending.subarray(delimiterIndex + 1)
-    pending = Buffer.alloc(0)
-
-    const message = crypt.decrypt(encrypted)
-    if (message === null) {
-      if (onInvalid) onInvalid()
-      return
-    }
-
-    onMessage(message, remainder)
-  }
-
-  function invalid() {
-    completed = true
-    pending = Buffer.alloc(0)
-    if (onInvalid) onInvalid()
-  }
-}
-
-module.exports.log = log
+module.exports = { createMessaging, tryParseJSON }
