@@ -1,9 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
+
+### Breaking changes
+
+- Upgraded the wire protocol to version 7. Relay, agent, and client must be
+  upgraded together; peers using earlier protocol versions are rejected.
 
 ### Fixed
 
+- Keep rejected relay sockets tracked and bounded by the handshake deadline
+  until they close, including during forced shutdown.
+- Enforce control-frame size limits consistently across complete and fragmented
+  frames without counting raw tunnel payload bytes.
+- Share concurrent relay/client startup attempts and wait for startup during
+  shutdown, while allowing retries after startup failures.
 - Reconnect registered control sessions when relay pongs stop arriving, and
   close idle relay control sockets when their configured timeout expires.
 - Treat backpressured control writes as successfully queued messages instead
@@ -11,6 +22,15 @@
 - Destroy unpaired local/data sockets after setup failures so half-open peers
   cannot keep failed tunnels alive.
 - Include the relay connection helper in the published package.
+
+### Changed
+
+- Replace the unused generic byte-channel implementation with a native socket
+  bridge for TCP and TLS, preserving backpressure and half-close behavior.
+- Share agent/client data-readiness handling and use one relay pairing deadline
+  per pending ticket.
+- Simplify relay routes to one agent and a client map, and remove unused utility
+  exports, tunnel metadata, and socket properties.
 
 ### Added
 

@@ -3,7 +3,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const net = require('node:net')
-const { setTimeout: delay } = require('node:timers/promises')
 
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
@@ -147,8 +146,6 @@ test('connection resets and a slow reader do not poison later streams', { timeou
         return resetConnection(ports.clients[0], Buffer.alloc(256 * 1024, index))
       })
     )
-    await delay(200)
-
     const payload = Buffer.alloc(4 * 1024 * 1024)
     for (let index = 0; index < payload.length; index++) payload[index] = index & 0xff
     await assertEcho(ports.clients[0], payload, 10_000, 250)
@@ -359,15 +356,27 @@ function assertEcho(port, payload, timeout = 5_000, readPause = 0) {
 }
 
 function resetConnection(port, payload) {
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host, port })
-    socket.on('connect', () => {
-      socket.write(payload)
-      if (socket.resetAndDestroy) socket.resetAndDestroy()
-      else socket.destroy()
+    let reset = false
+    const timer = setTimeout(() => finish(new Error('tunnel did not echo before reset')), 5_000)
+    socket.on('connect', () => socket.write(payload))
+    // An echo proves the tunnel reached the target before we reset it.
+    socket.once('data', () => {
+      reset = true
+      socket.resetAndDestroy()
     })
-    socket.on('error', () => resolve())
-    socket.on('close', () => resolve())
+    socket.on('error', error => {
+      if (!reset) finish(error)
+    })
+    socket.on('close', () => finish(reset ? undefined : new Error('tunnel closed before reset')))
+
+    function finish(error) {
+      clearTimeout(timer)
+      socket.destroy()
+      if (error) reject(error)
+      else resolve()
+    }
   })
 }
 

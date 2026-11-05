@@ -1,21 +1,10 @@
 'use strict'
 
 const crypto = require('node:crypto')
-const { PROTOCOL_VERSION, TYPES } = require('./protocol')
-const { readInteger, readPort } = require('./config')
+const { TYPES } = require('./protocol')
 
 const logDebug = process.env.N_T_LOG_DEBUG === 'true'
 const logError = process.env.N_T_LOG_ERROR === 'true'
-
-module.exports.types = TYPES
-module.exports.protocolVersion = PROTOCOL_VERSION
-
-module.exports.removeElement = (array, element) => {
-  const idx = array.indexOf(element)
-  if (idx >= 0) {
-    array.splice(idx, 1)
-  }
-}
 
 const log = {
   info(...args) {
@@ -32,9 +21,9 @@ if (logError) {
   log.err = (...args) => console.error('ERR:', ...args)
 }
 
-module.exports.tryParseJSON = (json, reviver) => {
+module.exports.tryParseJSON = json => {
   try {
-    return JSON.parse(json, reviver)
+    return JSON.parse(json)
   } catch (_error) {
     log.err('JSON', json)
     return null
@@ -49,9 +38,6 @@ module.exports.verifyDataJson = dataJson => {
 
   return true
 }
-
-module.exports.readInteger = readInteger
-module.exports.readPort = readPort
 
 if (!process.env.N_T_CRYPT_KEY) {
   console.log('WARNING: default CRYPT KEY is used!!!')
@@ -130,6 +116,7 @@ module.exports.createMessageDecoder = (onMessage, onInvalid) => {
 
     let delimiterIndex = pending.indexOf(messageDelimiter)
     while (delimiterIndex >= 0) {
+      if (delimiterIndex > maxMessageLength) return invalid()
       const encrypted = pending.subarray(0, delimiterIndex).toString('ascii')
       pending = pending.subarray(delimiterIndex + 1)
 
@@ -162,6 +149,7 @@ module.exports.createFirstMessageDecoder = (onMessage, onInvalid) => {
       if (pending.length > maxMessageLength) invalid()
       return
     }
+    if (delimiterIndex > maxMessageLength) return invalid()
 
     completed = true
     const encrypted = pending.subarray(0, delimiterIndex).toString('ascii')

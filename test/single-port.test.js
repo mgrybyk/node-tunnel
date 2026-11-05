@@ -3,16 +3,20 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const net = require('node:net')
+const { once } = require('node:events')
 const { setTimeout: delay } = require('node:timers/promises')
 
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
 const { createRelay } = require('../relay')
 const { PROTOCOL_VERSION, TYPES, CONNECTION_KINDS } = require('../protocol')
-const { crypt, writeMessage, createMessageDecoder, createFirstMessageDecoder, log } = require('../utils')
-const { host, reservePort, closeServer, waitForSocketClose } = require('../test-support/helpers')
+const { crypt, writeMessage, createFirstMessageDecoder, log } = require('../utils')
+const { createMessageQueue } = require('../test-support/message-queue')
+const { host, reservePort, closeServer, waitForSocketClose, waitForCondition } = require('../test-support/helpers')
 
-test('one relay port pairs ticketed data sockets, preserves preface remainders, and rejects replay', async t => {
+test('one relay port pairs ticketed data sockets, preserves preface remainders, and rejects replay', {
+  timeout: 5_000
+}, async t => {
   t.mock.method(log, 'info', () => {})
   const reservation = await reservePort()
   const port = reservation.port
@@ -104,6 +108,18 @@ test('one relay port pairs ticketed data sockets, preserves preface remainders, 
 
   clientData.on('end', () => clientData.end())
   agentData.on('end', () => agentData.end())
+  const replacementClient = await connectControl(
+    port,
+    TYPES.CLIENT,
+    'single-port-route',
+    clientRegistration.registration.uuid
+  )
+  sockets.push(replacementClient.socket)
+  await replacementClient.messages.next()
+  const receivedByAgent = once(agentData, 'data')
+  clientData.write(Buffer.from([0x7f]))
+  assert.deepEqual((await receivedByAgent)[0], Buffer.from([0x7f]))
+
   const replacementAgent = await connectControl(
     port,
     TYPES.AGENT,
@@ -112,8 +128,68 @@ test('one relay port pairs ticketed data sockets, preserves preface remainders, 
   )
   sockets.push(replacementAgent.socket)
   await replacementAgent.messages.next()
+  const receivedByClient = once(clientData, 'data')
+  agentData.write(Buffer.from([0x80]))
+  assert.deepEqual((await receivedByClient)[0], Buffer.from([0x80]))
   replacementAgent.socket.destroy()
   await Promise.all([waitForSocketClose(clientData), waitForSocketClose(agentData)])
+})
+
+test('client replacement cancels pending tickets and routes keep session identities isolated', {
+  timeout: 5_000
+}, async t => {
+  t.mock.method(log, 'info', () => {})
+  const reservation = await reservePort()
+  const port = reservation.port
+  await closeServer(reservation.server)
+  const relay = createRelay({
+    serviceHost: host,
+    servicePort: port,
+    handshakeTimeout: 2_000,
+    controlIdleTimeout: 5_000
+  })
+  const sockets = []
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy()
+    await relay.close({ force: true })
+  })
+  await relay.start()
+  const register = async (type, name) => {
+    const connection = await connectControl(port, type, name, 'shared-uuid')
+    sockets.push(connection.socket)
+    const response = await connection.messages.next()
+    return { ...connection, registration: response.registration }
+  }
+  const send = (connection, message) =>
+    writeMessage(connection.socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...message }))
+  const agent = await register(TYPES.AGENT, 'first-route')
+  const client = await register(TYPES.CLIENT, 'first-route')
+  const otherClient = await register(TYPES.CLIENT, 'other-route')
+  assert.equal(client.registration.ready, true)
+  assert.equal(otherClient.registration.ready, false)
+  assert.equal(relay.getState().connectionNames, 2)
+
+  send(client, { openTunnel: { requestId: 'before-replacement' } })
+  const [firstOpen] = await Promise.all([client.messages.next(), agent.messages.next()])
+  assert.equal(relay.getState().pendingTunnels, 1)
+  const replacement = await register(TYPES.CLIENT, 'first-route')
+  await waitForCondition(() => relay.getState().pendingTunnels === 0)
+
+  send(replacement, { openTunnel: { requestId: 'after-replacement' } })
+  const [nextOpen] = await Promise.all([replacement.messages.next(), agent.messages.next()])
+  const ticket = nextOpen.openTunnel.ticket
+  assert.notEqual(ticket, firstOpen.openTunnel.ticket)
+  send(otherClient, { cancelTunnel: { ticket } })
+  send(otherClient, { ping: true })
+  await otherClient.messages.next()
+  assert.equal(relay.getState().pendingTunnels, 1, 'another route cannot cancel the replacement session ticket')
+
+  send(otherClient, { openTunnel: { requestId: 'unavailable-route' } })
+  assert.ok((await otherClient.messages.next()).tunnelError)
+  send(replacement, { cancelTunnel: { ticket } })
+  send(replacement, { ping: true })
+  await replacement.messages.next()
+  assert.equal(relay.getState().pendingTunnels, 0)
 })
 
 async function connectControl(port, type, name, uuid) {
@@ -133,25 +209,6 @@ function connectData(port) {
     socket.once('connect', () => resolve(socket))
     socket.once('error', reject)
   })
-}
-
-function createMessageQueue(socket) {
-  const messages = []
-  const waiters = []
-  const decode = createMessageDecoder(message => {
-    const parsed = JSON.parse(message)
-    const waiter = waiters.shift()
-    if (waiter) waiter(parsed)
-    else messages.push(parsed)
-  })
-  socket.on('data', decode)
-
-  return {
-    next() {
-      if (messages.length > 0) return Promise.resolve(messages.shift())
-      return new Promise(resolve => waiters.push(resolve))
-    }
-  }
 }
 
 function encodeFirstFrame(message, payload) {

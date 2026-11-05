@@ -11,11 +11,11 @@ verified byte-for-byte after the agent-side target returns it.
 
 There are exactly three presets:
 
-| Preset | Topology and duration | Purpose |
-| --- | --- | --- |
-| `tiny` | One route, one client, one measured second | Fast correctness check used during development and automated tests. |
-| `default` | Three agents, four clients per agent, 12 simultaneous sessions for 60 measured seconds | Main sustained channel-quality comparison. |
-| `resilience` | The default scenario plus a two-second relay restart at 30 seconds | Measures disconnects, reconnection, recovery time, and post-outage traffic. |
+| Preset       | Topology and duration                                                                  | Purpose                                                                     |
+| ------------ | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `tiny`       | One route, one client, one measured second                                             | Fast correctness check used during development and automated tests.         |
+| `default`    | Three agents, four clients per agent, 12 simultaneous sessions for 60 measured seconds | Main sustained channel-quality comparison.                                  |
+| `resilience` | The default scenario plus a two-second relay restart at 30 seconds                     | Measures disconnects, reconnection, recovery time, and post-outage traffic. |
 
 The default and resilience topology is:
 

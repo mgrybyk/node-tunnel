@@ -6,6 +6,7 @@ const { spawn } = require('node:child_process')
 
 const projectRoot = path.resolve(__dirname, '..')
 const host = '127.0.0.1'
+const serverSockets = new WeakMap()
 
 function startChild(label, script, env) {
   const child = spawn(process.execPath, [path.join(projectRoot, script)], {
@@ -219,6 +220,14 @@ async function reservePort() {
 }
 
 function listen(server, port = 0) {
+  if (!serverSockets.has(server)) {
+    const sockets = new Set()
+    serverSockets.set(server, sockets)
+    server.on('connection', socket => {
+      sockets.add(socket)
+      socket.once('close', () => sockets.delete(socket))
+    })
+  }
   return new Promise((resolve, reject) => {
     const onListening = () => {
       cleanup()
@@ -240,23 +249,20 @@ function listen(server, port = 0) {
 }
 
 function closeServer(server) {
+  for (const socket of serverSockets.get(server) || []) socket.destroy()
   if (!server.listening) return Promise.resolve()
-  return new Promise(resolve => {
-    let settled = false
-    const finish = () => {
-      if (settled) return
-      settled = true
-      clearTimeout(fallbackTimer)
-      resolve()
-    }
-    const fallbackTimer = setTimeout(finish, 1_000)
-    server.close(finish)
-    if (server.closeAllConnections) server.closeAllConnections()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('server did not close within 1000ms')), 1_000)
+    server.close(error => {
+      clearTimeout(timer)
+      if (error) reject(error)
+      else resolve()
+    })
   })
 }
 
 function waitForSocketClose(socket, timeout = 5_000) {
-  if (socket.closed || socket.destroyed) return Promise.resolve()
+  if (socket.closed) return Promise.resolve()
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {

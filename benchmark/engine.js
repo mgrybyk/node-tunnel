@@ -1,6 +1,7 @@
 'use strict'
 
-const { fork, spawnSync } = require('node:child_process')
+const childProcess = require('node:child_process')
+const { spawnSync } = childProcess
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const net = require('node:net')
@@ -88,7 +89,13 @@ async function runBenchmark(options = {}) {
     }
 
     if (!config.quiet) printScenarioStart(config.scenario)
-    const loadResultsPromise = Promise.all(topology.loadWorkers.map(worker => worker.request('run', runConfig)))
+    const runTimeout =
+      300 + runConfig.warmupMs + runConfig.durationMs + runConfig.drainTimeoutMs + config.startupTimeoutMs
+    const loadResultsPromise = Promise.all(
+      topology.loadWorkers.map(worker => worker.request('run', runConfig, runTimeout))
+    )
+    // Startup and measurement setup continue before these results are awaited.
+    loadResultsPromise.catch(() => {})
     await waitUntil(measurementStart)
     await Promise.all(topology.targetWorkers.map(worker => worker.request('reset-stats')))
     await topology.captureMeasurementBaselines()
@@ -229,6 +236,7 @@ async function startTopology(config) {
   const reservations = []
   const excludedPorts = new Set()
   const components = []
+  const register = component => components.push(component)
   const archivedMeasurements = []
   let relay
   let serverRestart = 0
@@ -263,11 +271,11 @@ async function startTopology(config) {
           script: targetChildPath,
           config: { host, port: item.port },
           ready: state => state.started,
-          timeout: config.startupTimeoutMs
+          timeout: config.startupTimeoutMs,
+          register
         })
       )
     )
-    components.push(...targetWorkers)
 
     const serverConfig = {
       servicePort: serviceReservation.port,
@@ -275,8 +283,7 @@ async function startTopology(config) {
       controlIdleTimeout: Math.max(120_000, config.scenario.warmupMs + config.scenario.durationMs + 60_000),
       shutdownTimeout: 2_000
     }
-    relay = await startApplicationComponent('relay', 'relay', serverConfig, state => state.started, config)
-    components.push(relay)
+    relay = await startApplicationComponent('relay', 'relay', serverConfig, state => state.started, config, register)
 
     const common = {
       relayHost: host,
@@ -287,39 +294,36 @@ async function startTopology(config) {
       handshakeTimeout: 10_000,
       shutdownTimeout: 2_000
     }
-    const agents = await Promise.all(
+    await Promise.all(
       targetReservations.map((item, routeIndex) =>
         startApplicationComponent(
           `agent-${routeIndex + 1}`,
           'agent',
           { ...common, name: routeName(routeIndex), targetHost: host, targetPort: item.port },
           state => state.connected && state.ready,
-          config
+          config,
+          register
         )
       )
     )
-    components.push(...agents)
 
-    const clients = []
     const clientPortsByRoute = []
     for (let routeIndex = 0; routeIndex < config.scenario.routes; routeIndex++) {
       const routePorts = []
       for (let clientIndex = 0; clientIndex < config.scenario.clientsPerRoute; clientIndex++) {
         const reservation = clientReservations[routeIndex * config.scenario.clientsPerRoute + clientIndex]
         routePorts.push(reservation.port)
-        clients.push(
-          await startApplicationComponent(
-            `client-${routeIndex + 1}-${clientIndex + 1}`,
-            'client',
-            { ...common, name: routeName(routeIndex), localPort: reservation.port },
-            state => state.connected && state.ready,
-            config
-          )
+        await startApplicationComponent(
+          `client-${routeIndex + 1}-${clientIndex + 1}`,
+          'client',
+          { ...common, name: routeName(routeIndex), localPort: reservation.port },
+          state => state.connected && state.ready,
+          config,
+          register
         )
       }
       clientPortsByRoute.push(routePorts)
     }
-    components.push(...clients)
 
     const loadWorkers = await Promise.all(
       clientPortsByRoute.map((ports, routeIndex) =>
@@ -341,11 +345,11 @@ async function startTopology(config) {
             reconnectIntervalMs: config.scenario.reconnectIntervalMs
           },
           ready: state => state.readySessions === state.expectedSessions,
-          timeout: config.startupTimeoutMs
+          timeout: config.startupTimeoutMs,
+          register
         })
       )
     )
-    components.push(...loadWorkers)
 
     return {
       loadWorkers,
@@ -378,10 +382,10 @@ async function startTopology(config) {
           'relay',
           serverConfig,
           state => state.started,
-          config
+          config,
+          register
         )
         relay.baseline = zeroMetrics()
-        components.push(relay)
         await waitFor(
           async () => {
             const states = await Promise.all(loadWorkers.map(worker => worker.request('state')))
@@ -428,7 +432,7 @@ async function startTopology(config) {
   }
 }
 
-function startApplicationComponent(label, role, componentConfig, ready, config) {
+function startApplicationComponent(label, role, componentConfig, ready, config, register) {
   return startManagedChild({
     label,
     category: role === 'relay' ? 'relay' : `${role}s`,
@@ -437,12 +441,13 @@ function startApplicationComponent(label, role, componentConfig, ready, config) 
     config: componentConfig,
     ready,
     timeout: config.startupTimeoutMs,
+    register,
     env: { N_T_CRYPT_KEY: benchmarkKey, N_T_LOG_DEBUG: 'false', N_T_LOG_ERROR: 'true' }
   })
 }
 
-async function startManagedChild({ label, category, script, args = [], config, ready, timeout, env = {} }) {
-  const child = fork(script, args, {
+async function startManagedChild({ label, category, script, args = [], config, ready, timeout, env = {}, register }) {
+  const child = childProcess.fork(script, args, {
     cwd: projectRoot,
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']
@@ -464,21 +469,24 @@ async function startManagedChild({ label, category, script, args = [], config, r
     if (message?.type === 'response') {
       const request = pending.get(message.requestId)
       if (request) {
-        pending.delete(message.requestId)
         request.resolve(message.value)
       }
     } else if (message?.type === 'fatal') {
-      fatalError = deserializeError(message.error, `${label} failed`)
-      for (const request of pending.values()) request.reject(fatalError)
-      pending.clear()
+      fail(deserializeError(message.error, `${label} failed`))
     }
   })
   child.once('exit', (code, signal) => {
     closed = true
     const error = new Error(`${label} exited (code=${code}, signal=${signal})\n${formatLogs(logBuffer)}`)
-    for (const request of pending.values()) request.reject(error)
-    pending.clear()
+    fail(error)
   })
+  child.once('error', fail)
+  child.once('disconnect', () => fail(new Error(`${label} disconnected`)))
+
+  function fail(error) {
+    fatalError ||= error
+    for (const request of pending.values()) request.reject(fatalError)
+  }
 
   const component = {
     label,
@@ -487,13 +495,35 @@ async function startManagedChild({ label, category, script, args = [], config, r
     get closed() {
       return closed
     },
-    request(type, value) {
+    request(type, value, requestTimeout = timeout) {
       if (fatalError) return Promise.reject(fatalError)
       if (!child.connected) return Promise.reject(new Error(`${label} is disconnected`))
       const requestId = nextRequestId++
       return new Promise((resolve, reject) => {
-        pending.set(requestId, { resolve, reject })
-        child.send({ type, requestId, config: value })
+        const timer = setTimeout(
+          () =>
+            finish(
+              new Error(`${label} ${type} request timed out after ${requestTimeout} ms\n${formatLogs(logBuffer)}`)
+            ),
+          requestTimeout
+        )
+        function finish(error, result) {
+          if (!pending.delete(requestId)) return
+          clearTimeout(timer)
+          if (error) reject(error)
+          else resolve(result)
+        }
+        pending.set(requestId, {
+          resolve: result => finish(null, result),
+          reject: error => finish(error)
+        })
+        try {
+          child.send({ type, requestId, config: value }, error => {
+            if (error) finish(error)
+          })
+        } catch (error) {
+          finish(error)
+        }
       })
     },
     close(force = false) {
@@ -506,7 +536,11 @@ async function startManagedChild({ label, category, script, args = [], config, r
           closed = true
           resolve()
         })
-        child.send({ type: 'close', force })
+        if (child.connected) {
+          child.send({ type: 'close', force }, error => {
+            if (error) child.kill('SIGKILL')
+          })
+        } else child.kill('SIGKILL')
       })
       return closePromise
     },
@@ -515,12 +549,15 @@ async function startManagedChild({ label, category, script, args = [], config, r
     }
   }
 
-  child.send({ type: 'start', config })
+  register(component)
   try {
+    child.send({ type: 'start', config }, error => {
+      if (error) fail(error)
+    })
     await waitFor(
-      async () => {
+      async remaining => {
         if (fatalError) throw fatalError
-        return ready(await component.request('state'))
+        return ready(await component.request('state', undefined, remaining))
       },
       timeout,
       `${label} did not become ready`,
@@ -793,7 +830,7 @@ function closeServer(server) {
 async function waitFor(check, timeout, message, logs) {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline) {
-    if (await check()) return
+    if (await check(deadline - Date.now())) return
     await delay(20)
   }
   throw new Error(`${message} after ${timeout} ms${logs ? `\n${formatLogs(logs)}` : ''}`)

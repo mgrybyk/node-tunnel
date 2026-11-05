@@ -56,16 +56,23 @@ See [SECURITY.md](SECURITY.md) for the trust model and security limitations.
 
 ## Main components
 
-* **Relay** — registers routes, creates tunnel tickets, pairs data connections,
+- **Relay** — registers routes, creates tunnel tickets, pairs data connections,
   and forwards traffic.
-* **Agent** — registers a route and connects tunnel traffic to the private
+- **Agent** — registers a route and connects tunnel traffic to the private
   target.
-* **Client** — exposes a local listener and requests tunnels through the relay.
-* **Peer session** — manages control connections, framing, keepalive, and
+- **Client** — exposes a local listener and requests tunnels through the relay.
+- **Peer session** — manages control connections, framing, keepalive, and
   reconnects.
-* **Data transport** — manages tunnel tickets, data connection matching, and
+- **Data transport** — manages tunnel tickets, data connection matching, and
   tunnel lifecycle.
-* **Byte channel** — provides transport-independent byte forwarding and
-  backpressure handling.
+- **Data readiness** — shares peer readiness validation, deadlines, and setup
+  listener cleanup between the client and agent.
+- **Socket bridge** — forwards TCP/TLS bytes using native socket pipes, preserving
+  backpressure, handshake remainders, and half-closes.
+
+Each relay route stores one agent socket and a map of client sockets. Replacing a
+control session cancels its pending tickets; established streams survive session
+replacement. A pending ticket owns the relay's pairing deadline, and pairing
+clears that deadline before forwarding starts.
 
 Control and data use separate connections but share the same relay listener.

@@ -7,8 +7,8 @@ const { spawnSync } = require('node:child_process')
 
 process.env.N_T_CRYPT_KEY = '0123456789abcdef0123456789abcdef'
 
-const { writeMessage, createMessageDecoder, createFirstMessageDecoder, readPort } = require('../utils')
-const { getRelayConfig } = require('../config')
+const { crypt, writeMessage, createMessageDecoder, createFirstMessageDecoder } = require('../utils')
+const { getRelayConfig, readPort } = require('../config')
 
 test('control decoder handles fragmented and coalesced frames', () => {
   const encoded = []
@@ -85,6 +85,59 @@ test('decoder stops after an invalid authenticated frame', () => {
 
   assert.equal(decodedMessages, 0)
   assert.equal(invalidMessages, 1)
+})
+
+for (const [name, createDecoder] of Object.entries({
+  control: createMessageDecoder,
+  first: createFirstMessageDecoder
+})) {
+  test(`${name} decoder rejects oversized frames regardless of fragmentation`, async t => {
+    const frame = Buffer.from(`${crypt.encrypt('x'.repeat(1024 * 1024))}\n`)
+    for (const splitAt of [frame.length, frame.length - 1, 100]) {
+      await t.test(`first chunk contains ${splitAt} bytes`, () => {
+        let messages = 0
+        let invalid = 0
+        const decode = createDecoder(
+          () => messages++,
+          () => invalid++
+        )
+        decode(frame.subarray(0, splitAt))
+        decode(frame.subarray(splitAt))
+        decode(frame)
+        assert.equal(messages, 0, 'oversized authenticated frames must never be delivered')
+        assert.equal(invalid, 1, 'the decoder must stop after rejecting a frame')
+      })
+    }
+  })
+}
+
+test('frame limit applies to each encoded frame, including the exact boundary', () => {
+  // Base64 expands every 3 bytes to 4; encryption adds a version byte, 12-byte IV, and 16-byte tag.
+  const payload = 'x'.repeat(((1024 * 1024) / 4) * 3 - 29)
+  const frame = Buffer.from(`${crypt.encrypt(payload)}\n`)
+  assert.equal(frame.length - 1, 1024 * 1024)
+  const messages = []
+  const decode = createMessageDecoder(
+    message => messages.push(message),
+    () => assert.fail('valid frame rejected')
+  )
+  decode(Buffer.concat([frame, frame]))
+  assert.deepEqual(messages, [payload, payload])
+})
+
+test('first-message frame limit excludes coalesced raw payload bytes', () => {
+  const frame = Buffer.from(`${crypt.encrypt('ready')}\n`)
+  const payload = Buffer.alloc(2 * 1024 * 1024, 0xff)
+  let received
+  const decode = createFirstMessageDecoder(
+    (message, remainder) => {
+      received = { message, remainder }
+    },
+    () => assert.fail('raw tunnel bytes must not count against the frame limit')
+  )
+  decode(Buffer.concat([frame, payload]))
+  assert.equal(received.message, 'ready')
+  assert.deepEqual(received.remainder, payload)
 })
 
 test('port configuration rejects invalid values', () => {

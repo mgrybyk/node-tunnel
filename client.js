@@ -10,16 +10,10 @@ if (require.main === module) loadEnvironment(process.argv[2])
 
 const { traceSocket } = require('./diagnostics')
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES } = require('./protocol')
-const { tryParseJSON, log, writeMessage, createFirstMessageDecoder } = require('./utils')
-const {
-  enableSocketKeepAlive,
-  startSocketDeadline,
-  stopListening,
-  destroySockets,
-  waitForSockets,
-  runCli
-} = require('./lifecycle')
-const { createTcpByteChannel, bridgeByteChannels } = require('./byte-channel')
+const { log, writeMessage } = require('./utils')
+const { enableSocketKeepAlive, stopListening, destroySockets, waitForSockets, runCli } = require('./lifecycle')
+const { bridgeSockets } = require('./socket-bridge')
+const { waitForDataReady } = require('./data-readiness')
 const { createPeerSession } = require('./peer-session')
 
 function createClient(config = getClientConfig()) {
@@ -33,6 +27,7 @@ function createClient(config = getClientConfig()) {
   let serviceUuid
   let started = false
   let stopping = false
+  let startPromise
   let closePromise
   let ready = false
   const controlSession = createPeerSession({
@@ -57,12 +52,12 @@ function createClient(config = getClientConfig()) {
   })
 
   function start() {
-    if (started) return Promise.resolve()
     if (stopping) return Promise.reject(new Error('client is closing'))
+    if (startPromise) return startPromise
 
     localServer = net.createServer({ pauseOnConnect: true, allowHalfOpen: true }, handleLocalSocket)
 
-    return new Promise((resolve, reject) => {
+    startPromise = new Promise((resolve, reject) => {
       const onStartupError = error => {
         localServer.off('listening', onListening)
         reject(error)
@@ -79,7 +74,11 @@ function createClient(config = getClientConfig()) {
       localServer.once('error', onStartupError)
       localServer.once('listening', onListening)
       localServer.listen(config.localPort, config.localHost)
+    }).catch(error => {
+      startPromise = undefined
+      throw error
     })
+    return startPromise
   }
 
   function onRuntimeError(error) {
@@ -124,7 +123,6 @@ function createClient(config = getClientConfig()) {
       return localSocket.destroy()
     }
 
-    let trace
     const dataClient = connectToRelay(config, { allowHalfOpen: true }, () => {
       enableSocketKeepAlive(dataClient)
       writeMessage(
@@ -137,53 +135,24 @@ function createClient(config = getClientConfig()) {
         })
       )
     })
-    trace = traceSocket?.(dataClient, 'client-data', { ticket, requestId })
-    let bridge
+    const trace = traceSocket?.(dataClient, 'client-data', { ticket, requestId })
+    let bridged = false
     dataConnections.add(dataClient)
-    const clearReadinessDeadline = startSocketDeadline(
-      dataClient,
-      config.handshakeTimeout,
-      trace &&
-        (() => {
-          trace('data-readiness-timeout', { timeoutMs: config.handshakeTimeout })
-        })
-    )
-
-    const decodeReady = createFirstMessageDecoder(
-      (message, remainder) => {
-        const readyMessage = tryParseJSON(message)
-        if (!readyMessage || readyMessage.protocolVersion !== PROTOCOL_VERSION || !readyMessage.ready) {
-          return dataClient.destroy()
-        }
-
-        trace?.('bridge-ready', { remainderBytes: remainder.length })
-        clearReadinessDeadline()
-        dataClient.removeListener('data', decodeReady)
-        bridge = bridgeByteChannels(
-          createTcpByteChannel(dataClient, { initialData: remainder }),
-          createTcpByteChannel(localSocket)
-        )
-        localSocket.resume()
-      },
-      () => dataClient.destroy()
-    )
-
-    dataClient.on('data', decodeReady)
-    dataClient.on('error', error => log.err('DATA_CLIENT', error.name || error.code, error.message))
-    dataClient.on('end', () => {
-      if (!bridge) dataClient.destroy()
+    waitForDataReady(dataClient, { timeout: config.handshakeTimeout, trace }, remainder => {
+      bridgeSockets(dataClient, localSocket, { leftInitialData: remainder })
+      bridged = true
     })
+
+    dataClient.on('error', error => log.err('DATA_CLIENT', error.name || error.code, error.message))
     dataClient.on('close', () => {
-      clearReadinessDeadline()
-      dataClient.removeListener('data', decodeReady)
       dataConnections.delete(dataClient)
-      if (!bridge && !localSocket.destroyed) {
+      if (!bridged && !localSocket.destroyed) {
         localSocket.destroy()
       }
     })
 
     localSocket.on('close', () => {
-      if (!bridge && !dataClient.destroyed) {
+      if (!bridged && !dataClient.destroyed) {
         dataClient.destroy()
       }
     })
@@ -222,14 +191,14 @@ function createClient(config = getClientConfig()) {
   function close({ force = false } = {}) {
     if (closePromise) return closePromise
     stopping = true
-    stopListening(localServer)
     closePendingLocalConnections()
 
     closePromise = (async () => {
+      await startPromise?.catch(() => {})
+      stopListening(localServer)
       if (!force) await waitForSockets(dataConnections, config.shutdownTimeout)
       await Promise.all([destroySockets(localConnections), destroySockets(dataConnections)])
       await controlSession.close()
-      if (localServer?.closeAllConnections) localServer.closeAllConnections()
       await new Promise(resolve => setImmediate(resolve))
       started = false
       log.info(`Client stopped. Local connections: ${localConnections.size}, data connections: ${dataConnections.size}`)

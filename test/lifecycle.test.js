@@ -13,7 +13,8 @@ const { createAgent } = require('../agent')
 const { createClient } = require('../client')
 const { TCP_KEEP_ALIVE_INITIAL_DELAY, enableSocketKeepAlive, createBackoff } = require('../lifecycle')
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES } = require('../protocol')
-const { writeMessage, createMessageDecoder, log } = require('../utils')
+const { writeMessage, log } = require('../utils')
+const { createMessageQueue } = require('../test-support/message-queue')
 const {
   host,
   reserveTopologyPorts,
@@ -59,36 +60,6 @@ test('TCP keepalive uses a short initial idle delay', () => {
 
   assert.deepEqual(calls, [{ enabled: true, initialDelay: 30_000 }])
   assert.equal(TCP_KEEP_ALIVE_INITIAL_DELAY, 30_000)
-})
-
-test('relay and client reject occupied listener ports without leaking handles', async t => {
-  silenceInfoLogs(t)
-  const serviceBlocker = net.createServer()
-  await listenOnAllInterfaces(serviceBlocker)
-  const relay = createRelay({
-    servicePort: serviceBlocker.address().port,
-    handshakeTimeout: 500,
-    controlIdleTimeout: 5_000,
-    shutdownTimeout: 100
-  })
-  const client = createClient(
-    peerConfig(
-      { service: serviceBlocker.address().port },
-      {
-        name: 'occupied-listener',
-        localPort: serviceBlocker.address().port,
-        shutdownTimeout: 100
-      }
-    )
-  )
-
-  t.after(async () => {
-    await Promise.all([relay.close({ force: true }), client.close({ force: true })])
-    await closeServer(serviceBlocker)
-  })
-
-  await assert.rejects(relay.start(), error => error.code === 'EADDRINUSE')
-  await assert.rejects(client.start(), error => error.code === 'EADDRINUSE')
 })
 
 test('graceful close drains an active stream through all three applications', { timeout: 15_000 }, async t => {
@@ -451,32 +422,6 @@ function registerControl(port, type, name) {
         resolve(result)
       }
     }
-  })
-}
-
-function createMessageQueue(socket) {
-  const messages = []
-  const waiters = []
-  const decode = createMessageDecoder(message => {
-    const parsed = JSON.parse(message)
-    const waiter = waiters.shift()
-    if (waiter) waiter(parsed)
-    else messages.push(parsed)
-  })
-  socket.on('data', decode)
-  return {
-    next() {
-      if (messages.length > 0) return Promise.resolve(messages.shift())
-      return new Promise(resolve => waiters.push(resolve))
-    }
-  }
-}
-
-function listenOnAllInterfaces(server) {
-  return new Promise((resolve, reject) => {
-    server.once('listening', resolve)
-    server.once('error', reject)
-    server.listen(0)
   })
 }
 

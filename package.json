@@ -1,6 +1,6 @@
 {
   "name": "node-tunnel",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Expose TCP services behind NAT through a relay on public a host",
   "main": "relay.js",
   "exports": {
@@ -12,7 +12,8 @@
   },
   "files": [
     "agent.js",
-    "byte-channel.js",
+    "socket-bridge.js",
+    "data-readiness.js",
     "client.js",
     "config.js",
     "diagnostics.js",

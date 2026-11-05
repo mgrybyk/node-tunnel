@@ -4,7 +4,15 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const net = require('node:net')
-const { host, waitForOutput, waitForListening, listen, closeServer } = require('../test-support/helpers')
+const { once } = require('node:events')
+const {
+  host,
+  waitForOutput,
+  waitForListening,
+  listen,
+  closeServer,
+  waitForSocketClose
+} = require('../test-support/helpers')
 
 test('output waiter immediately reports a child that already exited', async () => {
   const child = new EventEmitter()
@@ -64,4 +72,42 @@ test('listening waiter uses the TCP port instead of child output', async t => {
 
   setTimeout(() => server.listen(port, host), 25)
   await ready
+})
+
+test('server cleanup closes half-open fixture sockets before resolving', async t => {
+  const server = net.createServer({ allowHalfOpen: true })
+  t.after(() => closeServer(server))
+  await listen(server)
+  const accepted = once(server, 'connection')
+  const socket = net.createConnection({ host, port: server.address().port })
+  t.after(() => socket.destroy())
+  const [peer] = await accepted
+
+  await closeServer(server)
+
+  assert.equal(peer.closed, true)
+  assert.equal(server.listening, false)
+})
+
+test('server cleanup rejects when its close callback never completes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const closing = closeServer({ listening: true, close() {} })
+  const rejected = assert.rejects(closing, /server did not close/)
+  t.mock.timers.tick(1_000)
+  await rejected
+})
+
+test('socket close waiter waits for close after destruction starts', async () => {
+  const socket = new EventEmitter()
+  socket.destroyed = true
+  socket.closed = false
+  let settled = false
+  const closed = waitForSocketClose(socket).then(() => {
+    settled = true
+  })
+  await Promise.resolve()
+  assert.equal(settled, false)
+  socket.closed = true
+  socket.emit('close')
+  await closed
 })

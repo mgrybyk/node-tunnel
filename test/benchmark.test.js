@@ -2,6 +2,7 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const childProcess = require('node:child_process')
 const { parseArguments } = require('../benchmark/runner')
 const {
   METRIC_DEFINITIONS,
@@ -49,6 +50,52 @@ test('benchmark CLI accepts only scenario-level options', () => {
 test('benchmark latency summary includes comparison percentiles', () => {
   assert.deepEqual(summarize([4, 1, 3, 2]), { min: 1, p50: 2, p95: 4, p99: 4, max: 4 })
 })
+
+for (const failure of ['unresponsive IPC', 'fatal error']) {
+  test(`benchmark cleans up a partially started batch after ${failure}`, { timeout: 10_000 }, async t => {
+    const children = []
+    t.after(() => {
+      for (const child of children) {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+      }
+    })
+    const fork = childProcess.fork
+    t.mock.method(childProcess, 'fork', (...args) => {
+      const child = fork(...args)
+      children.push(child)
+      if (children.length === 2) {
+        const send = child.send.bind(child)
+        t.mock.method(child, 'send', (message, callback) => {
+          if (message.type !== 'state') return send(message, callback)
+          callback?.(null)
+          if (failure === 'fatal error') {
+            child.once('message', () =>
+              child.emit('message', { type: 'fatal', error: { message: 'injected target failure' } })
+            )
+          }
+          return true
+        })
+      }
+      return child
+    })
+
+    await assert.rejects(
+      runBenchmark({
+        preset: 'tiny',
+        scenarioOverrides: { routes: 2 },
+        startupTimeoutMs: 1_000,
+        outputPath: false,
+        quiet: true
+      }),
+      failure === 'unresponsive IPC' ? /target-2 state request timed out/ : /injected target failure/
+    )
+    assert.equal(children.length, 2)
+    assert.ok(
+      children.every(child => child.exitCode !== null || child.signalCode !== null),
+      'the failed child and its healthy sibling must exit before the benchmark rejects'
+    )
+  })
+}
 
 test('tiny benchmark validates a sustained real tunnel session', { timeout: 30_000 }, async () => {
   const report = await runBenchmark({

@@ -4,8 +4,8 @@ const crypto = require('node:crypto')
 const { traceTunnel } = require('./diagnostics')
 const { PROTOCOL_VERSION, TYPES } = require('./protocol')
 const { log, writeMessage } = require('./utils')
-const { createTcpByteChannel, bridgeByteChannels } = require('./byte-channel')
-const { startSocketDeadline, destroySockets, waitForSockets } = require('./lifecycle')
+const { bridgeSockets } = require('./socket-bridge')
+const { destroySockets, waitForSockets } = require('./lifecycle')
 
 const MAX_PENDING_TUNNELS = 1024
 
@@ -48,15 +48,12 @@ function createTcpDataTransport(config) {
     traceTunnel?.('data-accepted', message.ticket, { type: message.type, socketId: socket.tunnelTrace?.id })
 
     dataSockets.add(socket)
-    const clearReadinessDeadline = startSocketDeadline(socket, config.handshakeTimeout)
     const side = {
       socket,
-      channel: createTcpByteChannel(socket, { initialData: remainder }),
-      clearReadinessDeadline
+      initialData: remainder
     }
     pending[message.type] = side
     socket.on('close', () => {
-      clearReadinessDeadline()
       dataSockets.delete(socket)
       if (pendingTunnels.get(pending.ticket) === pending)
         cancelPendingTunnel(pending.ticket, undefined, 'data-socket-closed')
@@ -74,23 +71,24 @@ function createTcpDataTransport(config) {
     pendingTunnels.delete(pending.ticket)
     clearTimeout(pending.timer)
     const active = {
-      routeName: pending.routeName,
       agentSession: pending.agentSession,
-      clientSession: pending.clientSession,
       sockets: new Set([pending.client.socket, pending.agent.socket])
     }
     activeTunnels.add(active)
     pending.client.socket.activeTunnel = active
     pending.agent.socket.activeTunnel = active
-    pending.client.clearReadinessDeadline()
-    pending.agent.clearReadinessDeadline()
 
     traceTunnel?.('paired-ready-queued', pending.ticket)
     pending.client.socket.tunnelTrace?.('bridge-ready')
     pending.agent.socket.tunnelTrace?.('bridge-ready')
     sendJson(pending.client.socket, { ready: true })
     sendJson(pending.agent.socket, { ready: true })
-    bridgeByteChannels(pending.agent.channel, pending.client.channel)
+    bridgeSockets(pending.agent.socket, pending.client.socket, {
+      leftInitialData: pending.agent.initialData,
+      rightInitialData: pending.client.initialData
+    })
+    pending.agent.initialData = undefined
+    pending.client.initialData = undefined
   }
 
   function cancelPendingTunnel(ticket, session, reason = 'cancelled') {
@@ -120,7 +118,6 @@ function createTcpDataTransport(config) {
   function replaceSession(previousSession, nextSession) {
     cancelPendingForSession(previousSession)
     for (const active of activeTunnels) {
-      if (active.clientSession === previousSession) active.clientSession = nextSession
       if (active.agentSession === previousSession) active.agentSession = nextSession
     }
   }
