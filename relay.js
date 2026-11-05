@@ -67,13 +67,18 @@ function createRelay(config = getRelayConfig()) {
   function handleIncomingSocket(socket) {
     if (closing) return socket.destroy()
 
-    socket.tunnelTrace = traceSocket(socket, 'relay-incoming')
-    socket.tunnelTrace('accepted')
+    const trace = traceSocket?.(socket, 'relay-incoming')
+    if (trace) socket.tunnelTrace = trace
     enableSocketKeepAlive(socket)
     handshakeSockets.add(socket)
-    const clearHandshakeDeadline = startSocketDeadline(socket, config.handshakeTimeout, () => {
-      socket.tunnelTrace('first-message-timeout', { timeoutMs: config.handshakeTimeout })
-    })
+    const clearHandshakeDeadline = startSocketDeadline(
+      socket,
+      config.handshakeTimeout,
+      trace &&
+        (() => {
+          trace('first-message-timeout', { timeoutMs: config.handshakeTimeout })
+        })
+    )
     const onHandshakeError = error => log.err('RELAY_SOCKET', error.name || error.code, error.message)
     const decodeFirstMessage = createFirstMessageDecoder(
       (data, remainder) => {
@@ -81,7 +86,7 @@ function createRelay(config = getRelayConfig()) {
         classifySocket(socket, decodeFirstMessage, onHandshakeError, data, remainder)
       },
       () => {
-        socket.tunnelTrace('invalid-first-frame')
+        socket.tunnelTrace?.('invalid-first-frame')
         socket.destroy()
       }
     )
@@ -100,7 +105,7 @@ function createRelay(config = getRelayConfig()) {
     handshakeSockets.delete(socket)
 
     const message = tryParseJSON(data)
-    socket.tunnelTrace('first-message-received', {
+    socket.tunnelTrace?.('first-message-received', {
       kind: message?.kind,
       type: message?.type,
       remainderBytes: remainder.length
@@ -161,7 +166,7 @@ function createRelay(config = getRelayConfig()) {
   function finishControlRegistration(socket, remainder) {
     controlSockets.add(socket)
     socket.setTimeout(config.controlIdleTimeout, () => {
-      socket.tunnelTrace('control-idle-timeout')
+      socket.tunnelTrace?.('control-idle-timeout')
       socket.destroy()
     })
     const decodeMessage = createMessageDecoder(
@@ -200,7 +205,7 @@ function createRelay(config = getRelayConfig()) {
 
   function notifyRegistration(socket, connectionGroup) {
     const agent = firstConnection(connectionGroup[AGENT])
-    socket.tunnelTrace('registration-response-queued', { type: socket.cProps.type })
+    socket.tunnelTrace?.('registration-response-queued', { type: socket.cProps.type })
     sendJson(socket, {
       registration: {
         uuid: socket.cProps.uuid,
@@ -254,7 +259,7 @@ function createRelay(config = getRelayConfig()) {
     })
     if (!ticket) return sendTunnelError(clientSocket, requestId, ERRORS.TOO_MANY_PENDING_TUNNELS)
 
-    traceTunnel('open-request-dispatched', ticket, { requestId })
+    traceTunnel?.('open-request-dispatched', ticket, { requestId })
     const sentToAgent = sendJson(agent.socket, { openTunnel: { ticket } })
     const sentToClient = sendJson(clientSocket, { openTunnel: { requestId, ticket } })
     if (sentToAgent && sentToClient) return true
@@ -270,7 +275,7 @@ function createRelay(config = getRelayConfig()) {
 
   function cleanupControlSocket(socket) {
     const cProps = socket.cProps
-    if (!cProps) return log.debug('unknown connection closed')
+    if (!cProps) return
 
     const connectionGroup = connections[cProps.name]
     const roleGroup = connectionGroup?.[cProps.type]

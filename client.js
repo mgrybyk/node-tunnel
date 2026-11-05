@@ -8,7 +8,7 @@ const { loadEnvironment, getClientConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
-const { traceSocket, tunnelReference } = require('./diagnostics')
+const { traceSocket } = require('./diagnostics')
 const { PROTOCOL_VERSION, CONNECTION_KINDS, TYPES } = require('./protocol')
 const { tryParseJSON, log, writeMessage, createFirstMessageDecoder } = require('./utils')
 const {
@@ -124,9 +124,8 @@ function createClient(config = getClientConfig()) {
       return localSocket.destroy()
     }
 
-    let trace = () => {}
+    let trace
     const dataClient = connectToRelay(config, { allowHalfOpen: true }, () => {
-      trace('data-registration-sent')
       enableSocketKeepAlive(dataClient)
       writeMessage(
         dataClient,
@@ -138,12 +137,17 @@ function createClient(config = getClientConfig()) {
         })
       )
     })
-    trace = traceSocket(dataClient, 'client-data', { tunnelRef: tunnelReference(ticket), requestId })
+    trace = traceSocket?.(dataClient, 'client-data', { ticket, requestId })
     let bridge
     dataConnections.add(dataClient)
-    const clearReadinessDeadline = startSocketDeadline(dataClient, config.handshakeTimeout, () => {
-      trace('data-readiness-timeout', { timeoutMs: config.handshakeTimeout })
-    })
+    const clearReadinessDeadline = startSocketDeadline(
+      dataClient,
+      config.handshakeTimeout,
+      trace &&
+        (() => {
+          trace('data-readiness-timeout', { timeoutMs: config.handshakeTimeout })
+        })
+    )
 
     const decodeReady = createFirstMessageDecoder(
       (message, remainder) => {
@@ -152,7 +156,7 @@ function createClient(config = getClientConfig()) {
           return dataClient.destroy()
         }
 
-        trace('bridge-ready', { remainderBytes: remainder.length })
+        trace?.('bridge-ready', { remainderBytes: remainder.length })
         clearReadinessDeadline()
         dataClient.removeListener('data', decodeReady)
         bridge = bridgeByteChannels(
@@ -169,11 +173,10 @@ function createClient(config = getClientConfig()) {
     dataClient.on('end', () => {
       if (!bridge) dataClient.destroy()
     })
-    dataClient.on('close', hadError => {
+    dataClient.on('close', () => {
       clearReadinessDeadline()
       dataClient.removeListener('data', decodeReady)
       dataConnections.delete(dataClient)
-      if (hadError) log.err('closed dataClient')
       if (!bridge && !localSocket.destroyed) {
         localSocket.destroy()
       }
@@ -206,7 +209,6 @@ function createClient(config = getClientConfig()) {
       if (pending) pending.socket.destroy()
       return
     }
-    log.debug('ignored service message', message)
   }
 
   function closePendingLocalConnections() {

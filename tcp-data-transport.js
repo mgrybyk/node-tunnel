@@ -1,7 +1,7 @@
 'use strict'
 
 const crypto = require('node:crypto')
-const { traceTunnel, tunnelReference } = require('./diagnostics')
+const { traceTunnel } = require('./diagnostics')
 const { PROTOCOL_VERSION, TYPES } = require('./protocol')
 const { log, writeMessage } = require('./utils')
 const { createTcpByteChannel, bridgeByteChannels } = require('./byte-channel')
@@ -30,7 +30,6 @@ function createTcpDataTransport(config) {
       agent: undefined,
       timer: setTimeout(() => cancelPendingTunnel(ticket, undefined, 'pairing-timeout'), config.handshakeTimeout)
     }
-    traceTunnel('pending-created', ticket, { timeoutMs: config.handshakeTimeout })
     pendingTunnels.set(ticket, pending)
     return ticket
   }
@@ -40,14 +39,13 @@ function createTcpDataTransport(config) {
     if (closing || !isDataMessage(message)) return socket.destroy()
     const pending = pendingTunnels.get(message.ticket)
     if (!pending || pending[message.type]) {
-      traceTunnel('data-rejected', message.ticket, {
+      traceTunnel?.('data-rejected', message.ticket, {
         type: message.type,
         reason: pending ? 'duplicate-side' : 'unknown-or-expired-ticket'
       })
       return socket.destroy()
     }
-    traceTunnel('data-accepted', message.ticket, { type: message.type })
-    socket.tunnelTrace?.('data-accepted', { type: message.type, tunnelRef: tunnelReference(message.ticket) })
+    traceTunnel?.('data-accepted', message.ticket, { type: message.type, socketId: socket.tunnelTrace?.id })
 
     dataSockets.add(socket)
     const clearReadinessDeadline = startSocketDeadline(socket, config.handshakeTimeout)
@@ -69,7 +67,7 @@ function createTcpDataTransport(config) {
     })
 
     if (!pending.client || !pending.agent) {
-      traceTunnel('waiting-for-peer', pending.ticket, { waitingFor: pending.client ? 'agent' : 'client' })
+      traceTunnel?.('waiting-for-peer', pending.ticket, { waitingFor: pending.client ? 'agent' : 'client' })
       return
     }
 
@@ -87,7 +85,7 @@ function createTcpDataTransport(config) {
     pending.client.clearReadinessDeadline()
     pending.agent.clearReadinessDeadline()
 
-    traceTunnel('paired-ready-queued', pending.ticket)
+    traceTunnel?.('paired-ready-queued', pending.ticket)
     pending.client.socket.tunnelTrace?.('bridge-ready')
     pending.agent.socket.tunnelTrace?.('bridge-ready')
     sendJson(pending.client.socket, { ready: true })
@@ -99,7 +97,7 @@ function createTcpDataTransport(config) {
     const pending = pendingTunnels.get(ticket)
     if (!pending) return false
     if (session && pending.clientSession !== session && pending.agentSession !== session) return false
-    traceTunnel('pending-cancelled', ticket, {
+    traceTunnel?.('pending-cancelled', ticket, {
       reason,
       clientArrived: Boolean(pending.client),
       agentArrived: Boolean(pending.agent)

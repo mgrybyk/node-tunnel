@@ -3,67 +3,55 @@
 const { createHash } = require('node:crypto')
 const { log } = require('./utils')
 
+// Match the logger's startup setting. Optional calls at each call site skip
+// argument construction, hashing, listeners, and timers when debug is disabled.
+module.exports = process.env.N_T_LOG_DEBUG === 'true' ? { debug, traceSocket, traceTunnel, tunnelReference } : {}
+
 let nextId = 0
 
-// Do not attach a data listener: it would resume sockets paused for tunnel readiness.
-function traceSocket(socket, label, context = {}) {
-  if (process.env.N_T_LOG_DEBUG !== 'true') return () => {}
+function debug(event, details = {}) {
+  log.debug(`${new Date().toISOString()} ${event} ${JSON.stringify(details)}`)
+}
+
+// Observe socket events without changing listener order or consuming data.
+function traceSocket(socket, label, { ticket, ...context } = {}) {
   const id = `${label}-${++nextId}`
   const startedAt = Date.now()
+  const details = ticket ? { ...context, tunnelRef: tunnelReference(ticket) } : context
   let phase = 'connecting'
-  const trace = (event, details = {}) => {
-    log.debug(new Date().toISOString(), id, event, {
+  const trace = (event, extra = {}) => debug(`${id} ${event}`, { ...details, ...extra })
+  const mark = (event, extra) => {
+    phase = event
+    trace(event, extra)
+  }
+  socket.on('connect', () => mark('tcp-connected'))
+  socket.on('secureConnect', () =>
+    trace('tls-connected', {
+      authorized: socket.authorized,
+      protocol: socket.getProtocol?.(),
+      issuer: socket.getPeerCertificate?.()?.issuer?.O
+    })
+  )
+  socket.on('error', error => trace('error', { code: error.code, message: error.message }))
+  socket.once('close', hadError =>
+    trace('closed', {
       phase,
       elapsedMs: Date.now() - startedAt,
       bytesRead: socket.bytesRead,
       bytesWritten: socket.bytesWritten,
-      readableLength: socket.readableLength,
-      writableLength: socket.writableLength,
-      writableNeedDrain: socket.writableNeedDrain,
-      ...context,
-      ...details
-    })
-  }
-  const mark = (event, details) => {
-    phase = event
-    trace(event, details)
-  }
-  trace('created', { remoteAddress: socket.remoteAddress, remotePort: socket.remotePort })
-  socket.on('lookup', (error, address, family) => trace('dns', { code: error?.code, address, family }))
-  socket.prependListener('connect', () =>
-    mark('tcp-connected', { remoteAddress: socket.remoteAddress, remotePort: socket.remotePort })
-  )
-  socket.prependListener('secureConnect', () =>
-    mark('tls-connected', {
-      authorized: socket.authorized,
-      authorizationError: socket.authorizationError,
-      protocol: socket.getProtocol?.(),
-      alpn: socket.alpnProtocol,
-      issuer: socket.getPeerCertificate?.()?.issuer?.O
+      hadError
     })
   )
-  socket.on('end', () => trace('read-end'))
-  socket.on('finish', () => trace('write-finish'))
-  socket.on('drain', () => trace('write-drain'))
-  socket.on('error', error => trace('error', { code: error.code, message: error.message }))
-  const timer = setInterval(() => trace('snapshot'), 15_000)
-  timer.unref()
-  socket.once('close', hadError => {
-    clearInterval(timer)
-    trace('closed', { hadError })
-  })
-  return (event, details) => mark(event, details)
+  mark.id = id
+  return mark
 }
 
-// A non-redeemable reference lets peer and relay logs identify the same tunnel.
+// Correlate peers without logging the redeemable tunnel ticket.
 function tunnelReference(ticket) {
   if (typeof ticket !== 'string') return undefined
   return createHash('sha256').update(ticket).digest('hex').slice(0, 16)
 }
 
 function traceTunnel(event, ticket, details = {}) {
-  if (process.env.N_T_LOG_DEBUG !== 'true') return
-  log.debug(new Date().toISOString(), 'tunnel', event, { tunnelRef: tunnelReference(ticket), ...details })
+  debug(`tunnel ${event}`, { tunnelRef: tunnelReference(ticket), ...details })
 }
-
-module.exports = { traceSocket, tunnelReference, traceTunnel }

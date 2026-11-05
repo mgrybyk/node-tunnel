@@ -108,7 +108,6 @@ The client and agent names must match. Now connect on device 1 to device 2:
 ssh user@127.0.0.1 -p 8000
 ```
 
-
 The same pattern works for any TCP service: change the agent target port, the
 client's local port, and the route name.
 
@@ -176,28 +175,21 @@ N_T_LOG_DEBUG=true
 N_T_LOG_ERROR=true
 ```
 
-Capture a failed attempt with timestamps, including the preceding connection
-setup. Debug output includes socket IDs, DNS/TCP/TLS progress, TLS certificate
-issuer, registration, target connection, relay readiness, errors, and closes.
-Each socket also reports byte counts and readable/writable buffer sizes every
-15 seconds. Agent data and target labels share a tunnel sequence number.
-A hashed `tunnelRef` identifies the same tunnel across agent, client, and relay
-logs without exposing its ticket. Relay logs now show incoming connections,
-first-message timeouts, accepted data registrations, which peer is missing,
-pairing, and cancellation reasons. When the agent receives no readiness reply,
-match its `tunnelRef` against the relay's `data-accepted`, `waiting-for-peer`,
-`paired-ready-queued`, and `pending-cancelled` events. An absent relay event
-alone is inconclusive unless the capture covers the entire attempt.
-The new socket traces do not log application payloads, encryption keys, or
-tunnel tickets. Logs do contain addresses and certificate issuer information.
+Debug events use one line each with a timestamp and socket ID. They cover TCP/TLS
+setup, registration, readiness, errors, timeouts, reconnects, and tunnel pairing.
+Socket close events include the last phase, lifetime, and total byte counts.
+There are no periodic snapshots, heartbeat success logs, or per-chunk logs.
 
-- `tls-connected` without registration/readiness points to a stall after TLS.
-- `target-connect-timeout` points to the agent's connection to the target service.
-- `registration-timeout` or `data-readiness-timeout` identifies setup deadlines.
-- `relay pong timed out` means a registered control connection stopped responding.
-- `bridge-ready` followed by growing `writableLength` indicates queued output;
-  compare both ends' byte counts to locate where progress stops. Counters measure
-  socket activity, not application acknowledgments.
+A hashed `tunnelRef` identifies the same tunnel across agent, client, and relay
+logs without exposing its ticket. Match it against the relay's `data-accepted`,
+`waiting-for-peer`, `paired-ready-queued`, and `pending-cancelled` events to see
+whether a peer failed to arrive or the ticket expired. The logs contain
+connection addresses and TLS certificate issuer information, but socket/tunnel
+traces omit application payloads, encryption keys, and raw tickets.
+
+With `N_T_LOG_DEBUG=false`, these diagnostics install no socket listeners or
+timers, compute no tunnel hashes, and skip constructing debug fields. Logging
+settings are read at startup; restart the process after changing them.
 
 These traces can distinguish timing/backpressure bugs from proxy interruptions;
 they do not by themselves establish that Zscaler caused a failure. Control frames
@@ -224,11 +216,11 @@ await relay.start()
 await relay.close()
 ```
 
-| Entry point | Export |
-| --- | --- |
-| `node-tunnel` | `createRelay` |
-| `node-tunnel/agent` | `createAgent` |
-| `node-tunnel/client` | `createClient` |
+| Entry point          | Export                             |
+| -------------------- | ---------------------------------- |
+| `node-tunnel`        | `createRelay`                      |
+| `node-tunnel/agent`  | `createAgent`                      |
+| `node-tunnel/client` | `createClient`                     |
 | `node-tunnel/config` | Environment-backed config builders |
 
 ## Security

@@ -6,9 +6,9 @@ function enableSocketKeepAlive(socket) {
   socket.setKeepAlive(true, TCP_KEEP_ALIVE_INITIAL_DELAY)
 }
 
-function startSocketDeadline(socket, timeout, onTimeout = () => {}) {
+function startSocketDeadline(socket, timeout, onTimeout) {
   let timer = setTimeout(() => {
-    onTimeout()
+    onTimeout?.()
     socket.destroy()
   }, timeout)
 

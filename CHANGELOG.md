@@ -15,7 +15,7 @@
 ### Added
 
 - Opt-in socket diagnostics with timestamps, connection phases, TLS metadata,
-  byte/buffer counts, periodic snapshots, and setup timeout reasons.
+  byte totals at socket close, and setup timeout reasons.
 - Configurable peer heartbeat intervals and pong deadlines.
 
 ## 0.6.0
