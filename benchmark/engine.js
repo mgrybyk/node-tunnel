@@ -299,7 +299,7 @@ async function startTopology(config) {
         startApplicationComponent(
           `agent-${routeIndex + 1}`,
           'agent',
-          { ...common, name: routeName(routeIndex), targetHost: host, targetPort: item.port },
+          { ...common, name: routeName(routeIndex), targetHost: host, targetPorts: [item.port] },
           state => state.connected && state.ready,
           config,
           register
@@ -316,7 +316,7 @@ async function startTopology(config) {
         await startApplicationComponent(
           `client-${routeIndex + 1}-${clientIndex + 1}`,
           'client',
-          { ...common, name: routeName(routeIndex), localPort: reservation.port },
+          { ...common, name: routeName(routeIndex), localPorts: [reservation.port] },
           state => state.connected && state.ready,
           config,
           register

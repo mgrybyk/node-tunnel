@@ -15,7 +15,7 @@ const { closeServer, host, listen } = require('../test-support/helpers')
 
 for (const [name, createApplication, config] of [
   ['relay', createRelay, { ...getRelayConfig({}), serviceHost: host, servicePort: 0 }],
-  ['client', createClient, { ...getClientConfig({}), relayPort: 0, localHost: host, localPort: 0 }]
+  ['client', createClient, { ...getClientConfig({}), relayPort: 0, localHost: host, localPorts: [0] }]
 ]) {
   test(`${name} concurrent starts create one listener and shutdown releases it`, { timeout: 5_000 }, async t => {
     const servers = observeListeners(t)
@@ -88,7 +88,7 @@ for (const [name, createApplication, config] of [
     const blocker = net.createServer()
     await listen(blocker)
     const port = blocker.address().port
-    const application = createApplication({ ...config, servicePort: port, localPort: port })
+    const application = createApplication({ ...config, servicePort: port, localPorts: [port] })
     t.after(async () => {
       await application.close({ force: true })
       await closeServer(blocker)

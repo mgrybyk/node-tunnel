@@ -42,7 +42,7 @@ test('client becomes usable when its agent connects later', { timeout: 20_000 },
     const client = startChild('client', 'client.js', {
       ...env,
       N_T_CLIENT_NAME: 'late-agent',
-      N_T_CLIENT_PORT: String(ports.clients[0])
+      N_T_CLIENT_PORTS: String(ports.clients[0])
     })
     children.push(relay, client)
 
@@ -54,7 +54,7 @@ test('client becomes usable when its agent connects later', { timeout: 20_000 },
       ...env,
       N_T_AGENT_NAME: 'late-agent',
       N_T_AGENT_DATA_HOST: host,
-      N_T_AGENT_DATA_PORT: String(backend.address().port)
+      N_T_AGENT_DATA_PORTS: String(backend.address().port)
     })
     children.push(agent)
 
@@ -83,12 +83,12 @@ test('agent and client recover after repeated relay restarts', { timeout: 30_000
       ...env,
       N_T_AGENT_NAME: 'restart-agent',
       N_T_AGENT_DATA_HOST: host,
-      N_T_AGENT_DATA_PORT: String(backend.address().port)
+      N_T_AGENT_DATA_PORTS: String(backend.address().port)
     })
     const client = startChild('client', 'client.js', {
       ...env,
       N_T_CLIENT_NAME: 'restart-agent',
-      N_T_CLIENT_PORT: String(ports.clients[0])
+      N_T_CLIENT_PORTS: String(ports.clients[0])
     })
     children.push(currentServer, agent, client)
 
@@ -131,12 +131,12 @@ test('connection resets and a slow reader do not poison later streams', { timeou
       ...env,
       N_T_AGENT_NAME: 'reset-agent',
       N_T_AGENT_DATA_HOST: host,
-      N_T_AGENT_DATA_PORT: String(backend.address().port)
+      N_T_AGENT_DATA_PORTS: String(backend.address().port)
     })
     const client = startChild('client', 'client.js', {
       ...env,
       N_T_CLIENT_NAME: 'reset-agent',
-      N_T_CLIENT_PORT: String(ports.clients[0])
+      N_T_CLIENT_PORTS: String(ports.clients[0])
     })
     children.push(relay, agent, client)
 
@@ -171,12 +171,12 @@ test('unavailable agent target closes the client stream without hanging', { time
       ...env,
       N_T_AGENT_NAME: 'unavailable-target',
       N_T_AGENT_DATA_HOST: host,
-      N_T_AGENT_DATA_PORT: String(targetPort)
+      N_T_AGENT_DATA_PORTS: String(targetPort)
     })
     const client = startChild('client', 'client.js', {
       ...env,
       N_T_CLIENT_NAME: 'unavailable-target',
-      N_T_CLIENT_PORT: String(ports.clients[0])
+      N_T_CLIENT_PORTS: String(ports.clients[0])
     })
     children.push(relay, agent, client)
 
@@ -289,7 +289,7 @@ test('agent and client exit when a relay reports another protocol version', { ti
     const client = startChild('version-mismatch-client', 'client.js', {
       ...commonEnv,
       N_T_CLIENT_NAME: 'version-check-client',
-      N_T_CLIENT_PORT: String(clientPort)
+      N_T_CLIENT_PORTS: String(clientPort)
     })
     children.push(client)
     const clientExit = await waitForExit(client)

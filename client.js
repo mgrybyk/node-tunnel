@@ -4,7 +4,7 @@ const { EventEmitter } = require('node:events')
 const net = require('node:net')
 const { connectToRelay } = require('./relay-connection')
 const { randomUUID } = require('node:crypto')
-const { loadEnvironment, getClientConfig } = require('./config')
+const { loadEnvironment, getClientConfig, validatePorts } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
@@ -16,6 +16,7 @@ const { bridgeWhenReady } = require('./data-readiness')
 const { createPeerSession } = require('./peer-session')
 
 function createClient(config = getClientConfig()) {
+  const localPorts = validatePorts(config.localPorts, 'localPorts', true)
   const messaging = createMessaging(config)
   const { log, sendJson } = messaging
   const { traceSocket } = createDiagnostics(log)
@@ -24,8 +25,7 @@ function createClient(config = getClientConfig()) {
   const dataConnections = new Set()
   const pendingLocalConnections = new Map()
 
-  /** @type {net.Server} */
-  let localServer
+  let localServers = []
   let started = false
   let stopping = false
   let startPromise
@@ -36,6 +36,7 @@ function createClient(config = getClientConfig()) {
     messaging,
     type: TYPES.CLIENT,
     name: config.name,
+    portCount: localPorts.length,
     onConnected() {
       ready = false
       log.info('Connection to relay established, waiting for agent.')
@@ -56,30 +57,43 @@ function createClient(config = getClientConfig()) {
     if (stopping) return Promise.reject(new Error('client is closing'))
     if (startPromise) return startPromise
 
-    localServer = net.createServer({ pauseOnConnect: true, allowHalfOpen: true }, handleLocalSocket)
-
-    startPromise = new Promise((resolve, reject) => {
-      const onStartupError = error => {
-        localServer.off('listening', onListening)
-        reject(error)
+    startPromise = (async () => {
+      for (const [portIndex, port] of localPorts.entries()) {
+        const server = net.createServer({ pauseOnConnect: true, allowHalfOpen: true }, socket =>
+          handleLocalSocket(socket, portIndex)
+        )
+        localServers.push(server)
+        await listen(server, port)
       }
-      const onListening = () => {
-        localServer.off('error', onStartupError)
-        localServer.on('error', onRuntimeError)
-        started = true
-        log.info(`Client listening on ${config.localHost}:${config.localPort}. Connecting to relay...`)
-        controlSession.start()
-        resolve()
-      }
-
-      localServer.once('error', onStartupError)
-      localServer.once('listening', onListening)
-      localServer.listen(config.localPort, config.localHost)
-    }).catch(error => {
+      started = true
+      log.info(`Client listening on ${config.localHost}:${localPorts.join(',')}. Connecting to relay...`)
+      controlSession.start()
+    })().catch(async error => {
+      await Promise.all(localServers.map(stopListening))
+      localServers = []
       startPromise = undefined
       throw error
     })
     return startPromise
+  }
+
+  function listen(server, port) {
+    return new Promise((resolve, reject) => {
+      const onStartupError = error => {
+        server.off('listening', onListening)
+        server.off('error', onStartupError)
+        reject(error)
+      }
+      const onListening = () => {
+        server.off('error', onStartupError)
+        server.on('error', onRuntimeError)
+        resolve()
+      }
+
+      server.once('error', onStartupError)
+      server.once('listening', onListening)
+      server.listen(port, config.localHost)
+    })
   }
 
   function onRuntimeError(error) {
@@ -91,7 +105,7 @@ function createClient(config = getClientConfig()) {
    * @param {net.Socket} localSocket
    * @returns {net.Socket|undefined}
    */
-  function handleLocalSocket(localSocket) {
+  function handleLocalSocket(localSocket, portIndex) {
     if (!ready || stopping) return localSocket.destroy()
 
     enableSocketKeepAlive(localSocket)
@@ -109,7 +123,7 @@ function createClient(config = getClientConfig()) {
       pendingLocalConnections.delete(requestId)
     })
 
-    if (!controlSession.send({ openTunnel: { requestId } })) localSocket.destroy()
+    if (!controlSession.send({ openTunnel: { requestId, portIndex } })) localSocket.destroy()
   }
 
   function openDataConnection(requestId, ticket) {
@@ -180,11 +194,11 @@ function createClient(config = getClientConfig()) {
 
     closePromise = (async () => {
       await startPromise?.catch(() => {})
-      const listenerClosed = stopListening(localServer)
+      const listenersClosed = Promise.all(localServers.map(stopListening))
       if (!force) await waitForSockets(dataConnections, config.shutdownTimeout)
       await Promise.all([destroySockets(localConnections), destroySockets(dataConnections)])
       await controlSession.close()
-      await listenerClosed
+      await listenersClosed
       started = false
       log.info(`Client stopped. Local connections: ${localConnections.size}, data connections: ${dataConnections.size}`)
     })()

@@ -59,7 +59,7 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
         ...commonEnv,
         N_T_AGENT_NAME: name,
         N_T_AGENT_DATA_HOST: host,
-        N_T_AGENT_DATA_PORT: String(backends[agentIndex].port)
+        N_T_AGENT_DATA_PORTS: String(backends[agentIndex].port)
       })
 
       children.push(agent)
@@ -74,7 +74,7 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
         const client = startChild(`client-${agentIndex}-${clientIndex}`, 'client.js', {
           ...commonEnv,
           N_T_CLIENT_NAME: agentName(agentIndex),
-          N_T_CLIENT_PORT: String(ports.clients[localPortIndex++])
+          N_T_CLIENT_PORTS: String(ports.clients[localPortIndex++])
         })
 
         client.agentIndex = agentIndex

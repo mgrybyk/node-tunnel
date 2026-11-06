@@ -3,7 +3,7 @@
 const { EventEmitter } = require('node:events')
 const net = require('node:net')
 const { connectToRelay } = require('./relay-connection')
-const { loadEnvironment, getAgentConfig } = require('./config')
+const { loadEnvironment, getAgentConfig, validatePorts } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
@@ -15,6 +15,7 @@ const { bridgeWhenReady } = require('./data-readiness')
 const { createPeerSession } = require('./peer-session')
 
 function createAgent(config = getAgentConfig()) {
+  const targetPorts = validatePorts(config.targetPorts, 'targetPorts')
   const messaging = createMessaging(config)
   const { log, sendJson } = messaging
   const { debug, traceSocket } = createDiagnostics(log)
@@ -32,6 +33,7 @@ function createAgent(config = getAgentConfig()) {
     messaging,
     type: TYPES.AGENT,
     name: config.name,
+    portCount: targetPorts.length,
     onConnected() {
       ready = false
       log.info('Connection to relay established.')
@@ -56,7 +58,7 @@ function createAgent(config = getAgentConfig()) {
       relayPort: config.relayPort,
       useTLS: config.useTLS,
       targetHost: config.targetHost,
-      targetPort: config.targetPort,
+      targetPorts,
       handshakeTimeoutMs: config.handshakeTimeout
     })
     controlSession.start()
@@ -81,10 +83,14 @@ function createAgent(config = getAgentConfig()) {
     }
     if (!message.openTunnel?.ticket || !ready || stopping) return
 
-    openDataConnection(message.openTunnel.ticket)
+    const { portIndex = 0 } = message.openTunnel
+    if (!Number.isInteger(portIndex) || portIndex < 0 || portIndex >= targetPorts.length) {
+      return controlSession.send({ cancelTunnel: { ticket: message.openTunnel.ticket } })
+    }
+    openDataConnection(message.openTunnel.ticket, targetPorts[portIndex])
   }
 
-  function openDataConnection(ticket) {
+  function openDataConnection(ticket, targetPort) {
     const localSocket = new net.Socket({ allowHalfOpen: true })
     localConnections.add(localSocket)
     localSocket.on('error', error => log.err('LOCAL_SOCKET', error.name || error.code, error.message))
@@ -94,7 +100,7 @@ function createAgent(config = getAgentConfig()) {
       if (stopping) return dataAgent.destroy()
       enableSocketKeepAlive(dataAgent)
 
-      trace?.('target-connecting', { host: config.targetHost, port: config.targetPort })
+      trace?.('target-connecting', { host: config.targetHost, port: targetPort })
       traceSocket?.(localSocket, 'agent-target', { ticket })
       localSocket.on('connect', () => {
         if (dataAgent.destroyed || stopping) return localSocket.destroy()
@@ -106,7 +112,7 @@ function createAgent(config = getAgentConfig()) {
           ticket
         })
       })
-      localSocket.connect(config.targetPort, config.targetHost)
+      localSocket.connect(targetPort, config.targetHost)
     })
 
     trace = traceSocket?.(dataAgent, 'agent-data', { ticket })

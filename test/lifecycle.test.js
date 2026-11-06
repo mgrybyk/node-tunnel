@@ -80,13 +80,13 @@ test('graceful close drains an active stream through all three applications', { 
     peerConfig(ports, {
       name: 'graceful-close',
       targetHost: host,
-      targetPort: backend.address().port
+      targetPorts: [backend.address().port]
     })
   )
   const client = createClient(
     peerConfig(ports, {
       name: 'graceful-close',
-      localPort: ports.clients[0]
+      localPorts: [ports.clients[0]]
     })
   )
 
@@ -128,13 +128,13 @@ test('shutdown deadline force-closes a stream that does not drain', { timeout: 1
     peerConfig(ports, {
       name: 'forced-close',
       targetHost: host,
-      targetPort: backend.address().port
+      targetPorts: [backend.address().port]
     })
   )
   const client = createClient(
     peerConfig(ports, {
       name: 'forced-close',
-      localPort: ports.clients[0],
+      localPorts: [ports.clients[0]],
       shutdownTimeout: 150
     })
   )
@@ -181,14 +181,14 @@ test('a paired stream remains open beyond the handshake timeout', { timeout: 10_
     peerConfig(ports, {
       name: 'long-lived-stream',
       targetHost: host,
-      targetPort: backend.address().port,
+      targetPorts: [backend.address().port],
       handshakeTimeout
     })
   )
   const client = createClient(
     peerConfig(ports, {
       name: 'long-lived-stream',
-      localPort: ports.clients[0],
+      localPorts: [ports.clients[0]],
       handshakeTimeout
     })
   )
@@ -244,14 +244,14 @@ test('agent outages preserve the client control socket and recover with an expli
     cryptKey,
     name: 'agent-outage',
     targetHost: host,
-    targetPort: backend.address().port
+    targetPorts: [backend.address().port]
   })
   const client = createClient(
     peerConfig(ports, {
       cryptKey,
       name: 'agent-outage',
       localHost: host,
-      localPort: ports.clients[0]
+      localPorts: [ports.clients[0]]
     })
   )
   const agents = [createAgent(agentConfig)]

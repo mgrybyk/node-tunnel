@@ -216,7 +216,9 @@ test('invalid registration fields are rejected before allocating a route', { tim
     { uuid: '' },
     { uuid: 'x'.repeat(129) },
     { uuid: null },
-    { type: 'unknown' }
+    { type: 'unknown' },
+    ...[null, 0, -1, 33, 65536, 1.5, '2', {}].map(portCount => ({ portCount })),
+    { type: TYPES.AGENT, portCount: 33 }
   ]) {
     const socket = await connectData(port)
     t.after(() => socket.destroy())

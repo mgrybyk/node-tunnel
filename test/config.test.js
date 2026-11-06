@@ -80,3 +80,55 @@ test('application keys and diagnostic settings are independent within one proces
   assert.equal(logs.length, 1)
   assert.deepEqual(createDiagnostics(second.log), {})
 })
+
+for (const [build, plural, property, fallback] of [
+  [getClientConfig, 'N_T_CLIENT_PORTS', 'localPorts', 8000],
+  [getAgentConfig, 'N_T_AGENT_DATA_PORTS', 'targetPorts', 8888]
+]) {
+  test(`${plural} supports single ports, ordered ranges, and default port arrays`, () => {
+    assert.deepEqual(build({ [plural]: ' 9999, 11100 - 11102, 12000 ' })[property], [9999, 11100, 11101, 11102, 12000])
+    assert.deepEqual(build({ [plural]: '65535,1-1' })[property], [65535, 1])
+    assert.deepEqual(build({})[property], [fallback])
+    assert.deepEqual(build({ [plural]: '' })[property], [fallback])
+    assert.deepEqual(build({ [plural]: '1234' })[property], [1234])
+  })
+
+  test(`${plural} rejects malformed, out-of-range, duplicate, and overlapping entries`, () => {
+    for (const value of [
+      ' ',
+      ',',
+      '80,',
+      '80,,81',
+      '-1',
+      '0',
+      '65536',
+      '2-1',
+      '0-2',
+      '1-65536',
+      '1.5',
+      '1e3',
+      '0x50',
+      '1-2-3',
+      '80,80',
+      '80-82,82-84',
+      '8888,8800-8900'
+    ]) {
+      assert.throws(() => build({ [plural]: value }), undefined, value)
+    }
+  })
+
+  test(`${plural} allows 32 ports and rejects larger ranges or combined lists`, () => {
+    assert.equal(build({ [plural]: '10000-10031' })[property].length, 32)
+    for (const value of [
+      '10000-10032',
+      '1-65535',
+      '9999,10000-10031',
+      Array.from({ length: 33 }, (_, i) => i + 1).join(',')
+    ]) {
+      assert.throws(() => build({ [plural]: value }), /must not exceed 32 ports/)
+    }
+    for (const value of ['80,80', '80-82,82-84']) {
+      assert.throws(() => build({ [plural]: value }), /duplicate or overlapping ports/)
+    }
+  })
+}

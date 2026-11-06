@@ -6,11 +6,17 @@ Only user-visible changes are listed here.
 
 ### Breaking
 
+- Wire protocol version 8 requires upgrading relay, agents, and clients
+  together.
 - `N_T_CRYPT_KEY` is required and must contain exactly 32 UTF-8 bytes.
 - A named environment file must exist. The default `.env` remains optional.
 
 ### Configuration
 
+- Forward multiple TCP ports with ordered lists and inclusive ranges in
+  `N_T_CLIENT_PORTS` and `N_T_AGENT_DATA_PORTS`. Ports map by position; clients
+  may use the first N agent ports. Each list supports up to 32 ports, with
+  duplicate or overlapping ports rejected.
 - The default heartbeat interval is 2 seconds and its timeout is 7 seconds.
 - JavaScript applications can set `cryptKey`, `logDebug`, and `logError`
   independently.

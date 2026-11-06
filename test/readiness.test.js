@@ -81,9 +81,9 @@ for (const role of ['agent', 'client']) {
         relayPort: relay.address().port,
         name: 'stalled-data',
         targetHost: host,
-        targetPort: target.address().port,
+        targetPorts: [target.address().port],
         localHost: host,
-        localPort,
+        localPorts: [localPort],
         handshakeTimeout: 300,
         reconnectDelay: 100,
         reconnectMaxDelay: 100,
@@ -93,7 +93,7 @@ for (const role of ['agent', 'client']) {
       if (failure === 'target stall') {
         const connect = net.Socket.prototype.connect
         t.mock.method(net.Socket.prototype, 'connect', function (...args) {
-          if (args[0] === config.targetPort) {
+          if (args[0] === config.targetPorts[0]) {
             targetConnects++
             return this
           }
