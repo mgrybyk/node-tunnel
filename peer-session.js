@@ -11,7 +11,6 @@ function createPeerSession({
   messaging,
   type,
   name,
-  portCount = 1,
   onConnected,
   onDisconnected,
   onMessage,
@@ -48,8 +47,7 @@ function createPeerSession({
       const message = {
         kind: CONNECTION_KINDS.CONTROL,
         type,
-        name,
-        portCount
+        name
       }
       if (uuid) message.uuid = uuid
       sendJson(nextSocket, message)

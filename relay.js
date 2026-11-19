@@ -3,7 +3,7 @@
 const { EventEmitter } = require('node:events')
 const net = require('node:net')
 const { randomUUID } = require('node:crypto')
-const { loadEnvironment, getRelayConfig, MAX_PORTS } = require('./config')
+const { loadEnvironment, getRelayConfig } = require('./config')
 
 if (require.main === module) loadEnvironment(process.argv[2])
 
@@ -138,12 +138,10 @@ function createRelay(config = getRelayConfig()) {
   }
 
   function registerControlSocket(socket, message, remainder) {
-    const { portCount = 1 } = message
     if (
       (message.type !== CLIENT && message.type !== AGENT) ||
       !isIdentifier(message.name) ||
-      (message.uuid !== undefined && !isIdentifier(message.uuid)) ||
-      !isPortCount(portCount)
+      (message.uuid !== undefined && !isIdentifier(message.uuid))
     )
       return socket.destroy()
 
@@ -159,7 +157,7 @@ function createRelay(config = getRelayConfig()) {
       return socket.end()
     }
 
-    socket.cProps = { name: message.name, uuid, type: message.type, portCount }
+    socket.cProps = { name: message.name, uuid, type: message.type }
     if (message.type === AGENT) route.agent = socket
     else route.clients.set(uuid, socket)
 
@@ -176,7 +174,7 @@ function createRelay(config = getRelayConfig()) {
 
     finishControlRegistration(socket, remainder)
     notifyRegistration(socket, route)
-    if (message.type === AGENT) {
+    if (message.type === AGENT && !previous) {
       for (const client of route.clients.values()) notifyRegistration(client, route)
     }
   }
@@ -207,11 +205,6 @@ function createRelay(config = getRelayConfig()) {
   }
 
   function notifyRegistration(socket, route) {
-    if (socket.cProps.type === CLIENT && route.agent && socket.cProps.portCount > route.agent.cProps.portCount) {
-      sendJson(socket, { error: ERRORS.PORT_COUNT_MISMATCH })
-      socket.end()
-      return
-    }
     socket.tunnelTrace?.('registration-response-queued', { type: socket.cProps.type })
     sendJson(socket, {
       registration: {
@@ -236,30 +229,19 @@ function createRelay(config = getRelayConfig()) {
       return
     }
 
-    const { requestId, portIndex = 0 } = message.openTunnel ?? {}
+    const requestId = message.openTunnel?.requestId
     if (socket.cProps?.type !== CLIENT || !isIdentifier(requestId)) {
       return socket.destroy()
     }
-    openTunnel(socket, requestId, portIndex)
+    openTunnel(socket, requestId)
   }
 
-  function openTunnel(clientSocket, requestId, portIndex) {
+  function openTunnel(clientSocket, requestId) {
     const cProps = clientSocket.cProps
     const route = routes.get(cProps.name)
     const agent = route?.agent
     if (route?.clients.get(cProps.uuid) !== clientSocket || !agent || agent.destroyed) {
       return sendTunnelError(clientSocket, requestId, ERRORS.TUNNEL_UNAVAILABLE)
-    }
-    if (cProps.portCount > agent.cProps.portCount) {
-      return sendTunnelError(clientSocket, requestId, ERRORS.PORT_COUNT_MISMATCH)
-    }
-    if (
-      !Number.isInteger(portIndex) ||
-      portIndex < 0 ||
-      portIndex >= cProps.portCount ||
-      portIndex >= agent.cProps.portCount
-    ) {
-      return sendTunnelError(clientSocket, requestId, ERRORS.INVALID_PORT_INDEX)
     }
 
     const ticket = dataTransport.createPendingTunnel({
@@ -269,7 +251,7 @@ function createRelay(config = getRelayConfig()) {
     if (!ticket) return sendTunnelError(clientSocket, requestId, ERRORS.TOO_MANY_PENDING_TUNNELS)
 
     traceTunnel?.('open-request-dispatched', ticket, { requestId })
-    const sentToAgent = sendJson(agent, { openTunnel: { ticket, portIndex } })
+    const sentToAgent = sendJson(agent, { openTunnel: { ticket } })
     const sentToClient = sendJson(clientSocket, { openTunnel: { requestId, ticket } })
     if (sentToAgent && sentToClient) return true
 
@@ -349,10 +331,6 @@ function createRelay(config = getRelayConfig()) {
 
 function isIdentifier(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= 128
-}
-
-function isPortCount(value) {
-  return Number.isInteger(value) && value >= 1 && value <= MAX_PORTS
 }
 
 module.exports = { createRelay }
