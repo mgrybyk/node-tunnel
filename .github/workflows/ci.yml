@@ -14,8 +14,56 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run-tests: ${{ steps.filter.outputs.run-tests }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether checks are needed
+        id: filter
+        shell: bash
+        run: |
+          node <<'NODE'
+          const { execFileSync } = require('node:child_process')
+          const { readFileSync, appendFileSync } = require('node:fs')
+          const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'))
+          const pr = event.pull_request
+          const base = pr ? pr.base.sha : event.before
+          const head = pr ? pr.head.sha : process.env.GITHUB_SHA
+          let runTests = true
+
+          if (base && !/^0+$/.test(base)) {
+            try {
+              // PRs compare against the merge base; pushes compare the entire pushed range.
+              // Disable rename detection so moving code into an ignored path still runs checks.
+              const range = `${base}${pr ? '...' : '..'}${head}`
+              const files = execFileSync('git', ['diff', '--no-renames', '--name-only', '-z', range], {
+                encoding: 'utf8'
+              }).split('\0').filter(Boolean)
+              const ignored = file => file.startsWith('benchmark/') || file.startsWith('docs/') ||
+                file.endsWith('.md') || file.endsWith('.env') || file === 'LICENSE'
+              runTests = files.some(file => !ignored(file))
+            } catch (error) {
+              // Run checks conservatively if a force push makes the old commit unavailable.
+              console.warn(`Could not determine changed files; running checks: ${error.message}`)
+            }
+          }
+
+          appendFileSync(process.env.GITHUB_OUTPUT, `run-tests=${runTests}\n`)
+          console.log(runTests ? 'Checks required.' : 'Only excluded paths changed; skipping checks.')
+          NODE
+
   test:
     name: Test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.run-tests == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -42,3 +90,25 @@ jobs:
 
       - name: Test with coverage
         run: npm run test:coverage
+
+  status:
+    name: CI status
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify required checks
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_TESTS: ${{ needs.changes.outputs.run-tests }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          if [[ "$CHANGES_RESULT" == 'success' ]] &&
+             { [[ "$RUN_TESTS" == 'false' && "$TEST_RESULT" == 'skipped' ]] ||
+               [[ "$RUN_TESTS" == 'true' && "$TEST_RESULT" == 'success' ]]; }; then
+            echo 'CI passed.'
+          else
+            echo 'CI failed or was cancelled.'
+            exit 1
+          fi
