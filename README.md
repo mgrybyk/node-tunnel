@@ -16,7 +16,7 @@ Use `node-tunnel` when:
 
 - the target service is behind NAT or a firewall;
 - you control a publicly reachable host; and
-- you want a self-hosted tunnel with no runtime dependencies.
+- you want a self-hosted tunnel with _no runtime dependencies_.
 
 Know that it requires relay, agent, and client processes, supports TCP only,
 and currently uses one shared key for all peers. The project is still a
