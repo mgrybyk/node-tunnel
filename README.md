@@ -39,6 +39,10 @@ git clone https://github.com/mgrybyk/node-tunnel.git
 cd node-tunnel
 ```
 
+Role-specific templates are available in [relay.example.env](relay.example.env),
+[agent.example.env](agent.example.env), and [client.example.env](client.example.env).
+All endpoint addresses, ports, and route IDs must be set explicitly.
+
 Generate one private key and use it in all three configuration files:
 
 ```sh
@@ -70,9 +74,9 @@ N_T_CRYPT_KEY=<same-32-character-key>
 N_T_RELAY_HOST=relay.example.com
 N_T_RELAY_PORT=32121
 
-N_T_AGENT_NAME=my-ssh
+N_T_ROUTE_ID=my-ssh
 N_T_AGENT_DATA_HOST=127.0.0.1
-N_T_AGENT_DATA_PORT=22
+N_T_AGENT_DATA_PORTS=22
 ```
 
 ```sh
@@ -90,22 +94,22 @@ N_T_CRYPT_KEY=<same-32-character-key>
 N_T_RELAY_HOST=relay.example.com
 N_T_RELAY_PORT=32121
 
-N_T_CLIENT_NAME=my-ssh
+N_T_ROUTE_ID=my-ssh
 N_T_CLIENT_BIND_HOST=127.0.0.1
-N_T_CLIENT_PORT=8000
+N_T_CLIENT_PORTS=8000
 ```
 
 ```sh
 npm run client -- client.env
 ```
 
-The client and agent names must match. Connect through the local port:
+The client and agent must use the same `N_T_ROUTE_ID`. Connect through the local port:
 
 ```sh
 ssh user@127.0.0.1 -p 8000
 ```
 
-For another TCP service, change the agent target, client port, and route name.
+For another TCP service, change the agent target, client port, and route ID.
 
 ## Next steps
 

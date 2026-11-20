@@ -1,6 +1,7 @@
 'use strict'
 
 const test = require('node:test')
+const { requiredEnv } = require('../test-support/config')
 const assert = require('node:assert/strict')
 const { EventEmitter, once } = require('node:events')
 const { setTimeout: delay } = require('node:timers/promises')
@@ -169,8 +170,8 @@ class MockSocket extends EventEmitter {
 
 for (const [label, config] of [
   ['API fallbacks', {}],
-  ['agent defaults', getAgentConfig({})],
-  ['client defaults', getClientConfig({})]
+  ['agent defaults', getAgentConfig(requiredEnv)],
+  ['client defaults', getClientConfig(requiredEnv)]
 ]) {
   test(`${label} detect missing pongs after nine seconds without extra pings or extending the deadline`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })

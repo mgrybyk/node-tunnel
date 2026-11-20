@@ -26,7 +26,7 @@ const {
 
 const cryptKey = process.env.N_T_CRYPT_KEY
 
-test('client becomes usable when its agent connects later', { timeout: 20_000 }, async t => {
+test('peers log presence across late arrivals, multiple clients, and agent restarts', { timeout: 20_000 }, async t => {
   const children = []
   const servers = []
   registerCleanup(t, children, servers)
@@ -35,14 +35,14 @@ test('client becomes usable when its agent connects later', { timeout: 20_000 },
     const backend = createEchoServer()
     await listen(backend)
     servers.push(backend)
-    const ports = await reserveTopologyPorts(1)
+    const ports = await reserveTopologyPorts(2)
     const env = topologyEnv(ports)
 
     const relay = startChild('relay', 'relay.js', env)
     const client = startChild('client', 'client.js', {
       ...env,
-      N_T_CLIENT_NAME: 'late-agent',
-      N_T_CLIENT_PORT: String(ports.clients[0])
+      N_T_ROUTE_ID: 'late-agent',
+      N_T_CLIENT_PORTS: String(ports.clients[0])
     })
     children.push(relay, client)
 
@@ -52,14 +52,51 @@ test('client becomes usable when its agent connects later', { timeout: 20_000 },
 
     const agent = startChild('agent', 'agent.js', {
       ...env,
-      N_T_AGENT_NAME: 'late-agent',
+      N_T_ROUTE_ID: 'late-agent',
       N_T_AGENT_DATA_HOST: host,
-      N_T_AGENT_DATA_PORT: String(backend.address().port)
+      N_T_AGENT_DATA_PORTS: String(backend.address().port)
     })
     children.push(agent)
 
     await waitForOutput(client, 'Agent found, ready!')
+    await waitForOutput(agent, ' connected.')
+    const firstUuid = agent.stdout.match(/Client "([^"]+)" connected\./)[1]
+    assert.doesNotMatch(client.stdout, /Agent disconnected/)
     await assertEcho(ports.clients[0], Buffer.from('client connected before agent'))
+
+    const secondClient = startChild('second-client', 'client.js', {
+      ...env,
+      N_T_ROUTE_ID: 'late-agent',
+      N_T_CLIENT_PORTS: String(ports.clients[1])
+    })
+    children.push(secondClient)
+    await waitForOutput(secondClient, 'Agent found, ready!')
+    await waitForOutputCount(agent, ' connected.', 2)
+    const secondUuid = [...agent.stdout.matchAll(/Client "([^"]+)" connected\./g)][1][1]
+    assert.notEqual(firstUuid, secondUuid)
+
+    await stopChild(secondClient)
+    await waitForOutput(agent, `Client "${secondUuid}" disconnected.`)
+    await waitForOutput(relay, 'client "late-agent" went offline.')
+    await assertEcho(ports.clients[0], Buffer.from('other client remains connected'))
+
+    await stopChild(agent)
+    await waitForOutput(client, 'Agent disconnected, waiting for agent.')
+    await waitForOutput(relay, 'agent "late-agent" went offline.')
+    await expectConnectionToClose(ports.clients[0])
+
+    const replacementAgent = startChild('replacement-agent', 'agent.js', {
+      ...env,
+      N_T_ROUTE_ID: 'late-agent',
+      N_T_AGENT_DATA_HOST: host,
+      N_T_AGENT_DATA_PORTS: String(backend.address().port)
+    })
+    children.push(replacementAgent)
+    await waitForOutputCount(client, 'Agent found, ready!', 2)
+    await waitForOutput(replacementAgent, `Client "${firstUuid}" connected.`)
+    await assertEcho(ports.clients[0], Buffer.from('agent reconnected'))
+    await stopChild(client)
+    await waitForOutput(replacementAgent, `Client "${firstUuid}" disconnected.`)
   } catch (error) {
     t.diagnostic(formatChildLogs(children))
     throw error
@@ -81,14 +118,14 @@ test('agent and client recover after repeated relay restarts', { timeout: 30_000
     let currentServer = startChild('relay-before-restart', 'relay.js', env)
     const agent = startChild('agent', 'agent.js', {
       ...env,
-      N_T_AGENT_NAME: 'restart-agent',
+      N_T_ROUTE_ID: 'restart-agent',
       N_T_AGENT_DATA_HOST: host,
-      N_T_AGENT_DATA_PORT: String(backend.address().port)
+      N_T_AGENT_DATA_PORTS: String(backend.address().port)
     })
     const client = startChild('client', 'client.js', {
       ...env,
-      N_T_CLIENT_NAME: 'restart-agent',
-      N_T_CLIENT_PORT: String(ports.clients[0])
+      N_T_ROUTE_ID: 'restart-agent',
+      N_T_CLIENT_PORTS: String(ports.clients[0])
     })
     children.push(currentServer, agent, client)
 
@@ -129,14 +166,14 @@ test('connection resets and a slow reader do not poison later streams', { timeou
     const relay = startChild('relay', 'relay.js', env)
     const agent = startChild('agent', 'agent.js', {
       ...env,
-      N_T_AGENT_NAME: 'reset-agent',
+      N_T_ROUTE_ID: 'reset-agent',
       N_T_AGENT_DATA_HOST: host,
-      N_T_AGENT_DATA_PORT: String(backend.address().port)
+      N_T_AGENT_DATA_PORTS: String(backend.address().port)
     })
     const client = startChild('client', 'client.js', {
       ...env,
-      N_T_CLIENT_NAME: 'reset-agent',
-      N_T_CLIENT_PORT: String(ports.clients[0])
+      N_T_ROUTE_ID: 'reset-agent',
+      N_T_CLIENT_PORTS: String(ports.clients[0])
     })
     children.push(relay, agent, client)
 
@@ -169,14 +206,14 @@ test('unavailable agent target closes the client stream without hanging', { time
     const relay = startChild('relay', 'relay.js', env)
     const agent = startChild('agent', 'agent.js', {
       ...env,
-      N_T_AGENT_NAME: 'unavailable-target',
+      N_T_ROUTE_ID: 'unavailable-target',
       N_T_AGENT_DATA_HOST: host,
-      N_T_AGENT_DATA_PORT: String(targetPort)
+      N_T_AGENT_DATA_PORTS: String(targetPort)
     })
     const client = startChild('client', 'client.js', {
       ...env,
-      N_T_CLIENT_NAME: 'unavailable-target',
-      N_T_CLIENT_PORT: String(ports.clients[0])
+      N_T_ROUTE_ID: 'unavailable-target',
+      N_T_CLIENT_PORTS: String(ports.clients[0])
     })
     children.push(relay, agent, client)
 
@@ -198,7 +235,7 @@ test('duplicate agents terminate rejected agents', { timeout: 20_000 }, async t 
     const relay = startChild('relay', 'relay.js', env)
     const firstAgent = startChild('first-agent', 'agent.js', {
       ...env,
-      N_T_AGENT_NAME: 'occupied-name'
+      N_T_ROUTE_ID: 'occupied-name'
     })
     children.push(relay, firstAgent)
 
@@ -206,7 +243,7 @@ test('duplicate agents terminate rejected agents', { timeout: 20_000 }, async t 
 
     const duplicateAgent = startChild('duplicate-agent', 'agent.js', {
       ...env,
-      N_T_AGENT_NAME: 'occupied-name'
+      N_T_ROUTE_ID: 'occupied-name'
     })
     children.push(duplicateAgent)
     const duplicateExit = await waitForExit(duplicateAgent)
@@ -271,12 +308,16 @@ test('agent and client exit when a relay reports another protocol version', { ti
     const commonEnv = {
       N_T_CRYPT_KEY: cryptKey,
       N_T_RELAY_HOST: host,
+      N_T_RELAY_BIND_HOST: host,
+      N_T_CLIENT_BIND_HOST: host,
+      N_T_AGENT_DATA_HOST: host,
+      N_T_AGENT_DATA_PORTS: '8888',
       N_T_RELAY_PORT: String(fakeServer.address().port),
       N_T_RECONNECT_DELAY_MS: '100'
     }
     const agent = startChild('version-mismatch-agent', 'agent.js', {
       ...commonEnv,
-      N_T_AGENT_NAME: 'version-check-agent'
+      N_T_ROUTE_ID: 'version-check-agent'
     })
     children.push(agent)
     const agentExit = await waitForExit(agent)
@@ -288,8 +329,8 @@ test('agent and client exit when a relay reports another protocol version', { ti
     await closeServer(clientPortReservation.server)
     const client = startChild('version-mismatch-client', 'client.js', {
       ...commonEnv,
-      N_T_CLIENT_NAME: 'version-check-client',
-      N_T_CLIENT_PORT: String(clientPort)
+      N_T_ROUTE_ID: 'version-check-client',
+      N_T_CLIENT_PORTS: String(clientPort)
     })
     children.push(client)
     const clientExit = await waitForExit(client)
@@ -307,6 +348,10 @@ function topologyEnv(ports) {
     N_T_LOG_DEBUG: 'false',
     N_T_LOG_ERROR: 'true',
     N_T_RELAY_HOST: host,
+    N_T_RELAY_BIND_HOST: host,
+    N_T_CLIENT_BIND_HOST: host,
+    N_T_AGENT_DATA_HOST: host,
+    N_T_AGENT_DATA_PORTS: '8888',
     N_T_RELAY_PORT: String(ports.service),
     N_T_RECONNECT_DELAY_MS: '200',
     N_T_HANDSHAKE_TIMEOUT_MS: '300',

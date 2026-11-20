@@ -1,6 +1,7 @@
 'use strict'
 
 const test = require('node:test')
+const { requiredEnv } = require('../test-support/config')
 const assert = require('node:assert/strict')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
@@ -189,7 +190,7 @@ test('port configuration rejects invalid values', () => {
 })
 
 test('relay configuration exposes only the shared relay port', () => {
-  const config = getRelayConfig({ N_T_RELAY_PORT: '3006' })
+  const config = getRelayConfig({ ...requiredEnv, N_T_RELAY_PORT: '3006' })
   assert.equal(config.servicePort, 3006)
   assert.equal('portsFrom' in config, false)
   assert.equal('portsTo' in config, false)

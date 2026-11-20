@@ -1,6 +1,7 @@
 'use strict'
 
 const test = require('node:test')
+const { requiredEnv } = require('../test-support/config')
 const assert = require('node:assert/strict')
 const net = require('node:net')
 
@@ -26,7 +27,7 @@ for (const rejection of ['version mismatch', 'duplicate agent']) {
         return server
       })
       const relay = createRelay({
-        ...getRelayConfig({}),
+        ...getRelayConfig(requiredEnv),
         serviceHost: host,
         servicePort: 0,
         handshakeTimeout: 100

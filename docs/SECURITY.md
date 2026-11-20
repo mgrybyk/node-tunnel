@@ -7,7 +7,7 @@ apply normal host and network hardening when using it outside a trusted network.
 
 - All peers share one 32-byte control key. There is no per-peer identity, key
   revocation, or online rotation.
-- Route names identify destinations; they do not authorize access. Any peer
+- Route IDs identify destinations; they do not authorize access. Any peer
   with the shared key can access any configured route.
 - Control messages use authenticated encryption. Without TLS, tunnel payloads
   are plaintext.

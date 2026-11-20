@@ -46,6 +46,8 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
       N_T_LOG_DEBUG: 'false',
       N_T_LOG_ERROR: 'true',
       N_T_RELAY_HOST: host,
+      N_T_RELAY_BIND_HOST: host,
+      N_T_CLIENT_BIND_HOST: host,
       N_T_RELAY_PORT: String(ports.service)
     }
 
@@ -57,9 +59,9 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
       const name = agentName(agentIndex)
       const agent = startChild(`agent-${agentIndex}`, 'agent.js', {
         ...commonEnv,
-        N_T_AGENT_NAME: name,
+        N_T_ROUTE_ID: name,
         N_T_AGENT_DATA_HOST: host,
-        N_T_AGENT_DATA_PORT: String(backends[agentIndex].port)
+        N_T_AGENT_DATA_PORTS: String(backends[agentIndex].port)
       })
 
       children.push(agent)
@@ -73,8 +75,8 @@ test('parallel clients transfer uncorrupted data through multiple agents', { tim
       for (let clientIndex = 0; clientIndex < clientsPerAgent; clientIndex++) {
         const client = startChild(`client-${agentIndex}-${clientIndex}`, 'client.js', {
           ...commonEnv,
-          N_T_CLIENT_NAME: agentName(agentIndex),
-          N_T_CLIENT_PORT: String(ports.clients[localPortIndex++])
+          N_T_ROUTE_ID: agentName(agentIndex),
+          N_T_CLIENT_PORTS: String(ports.clients[localPortIndex++])
         })
 
         client.agentIndex = agentIndex

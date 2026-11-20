@@ -1,6 +1,7 @@
 'use strict'
 
 const test = require('node:test')
+const { requiredEnv } = require('../test-support/config')
 const assert = require('node:assert/strict')
 const net = require('node:net')
 
@@ -14,8 +15,8 @@ const { getRelayConfig, getClientConfig } = require('../config')
 const { closeServer, host, listen } = require('../test-support/helpers')
 
 for (const [name, createApplication, config] of [
-  ['relay', createRelay, { ...getRelayConfig({}), serviceHost: host, servicePort: 0 }],
-  ['client', createClient, { ...getClientConfig({}), relayPort: 0, localHost: host, localPort: 0 }]
+  ['relay', createRelay, { ...getRelayConfig(requiredEnv), serviceHost: host, servicePort: 0 }],
+  ['client', createClient, { ...getClientConfig(requiredEnv), relayPort: 0, localHost: host, localPorts: [0] }]
 ]) {
   test(`${name} concurrent starts create one listener and shutdown releases it`, { timeout: 5_000 }, async t => {
     const servers = observeListeners(t)
@@ -88,7 +89,7 @@ for (const [name, createApplication, config] of [
     const blocker = net.createServer()
     await listen(blocker)
     const port = blocker.address().port
-    const application = createApplication({ ...config, servicePort: port, localPort: port })
+    const application = createApplication({ ...config, servicePort: port, localPorts: [port] })
     t.after(async () => {
       await application.close({ force: true })
       await closeServer(blocker)
@@ -106,7 +107,7 @@ for (const [name, createApplication, config] of [
 
 test('agent cannot restart while its shutdown is in progress', async t => {
   t.mock.method(console, 'log', () => {})
-  const agent = createAgent()
+  const agent = createAgent(require('../config').getAgentConfig(requiredEnv))
   await agent.start()
   const closing = agent.close({ force: true })
   t.after(() => closing)

@@ -43,6 +43,10 @@ test('one relay port pairs ticketed data sockets, preserves preface remainders, 
   const clientRegistration = await client.messages.next()
   assert.equal(agentRegistration.registration.ready, true)
   assert.equal(clientRegistration.registration.ready, true)
+  assert.deepEqual((await agent.messages.next()).clientPresence, {
+    uuid: clientRegistration.registration.uuid,
+    connected: true
+  })
 
   const requestId = 'open-1'
   writeMessage(client.socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, openTunnel: { requestId } }))
@@ -116,6 +120,8 @@ test('one relay port pairs ticketed data sockets, preserves preface remainders, 
   )
   sockets.push(replacementClient.socket)
   await replacementClient.messages.next()
+  writeMessage(agent.socket, JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ping: true }))
+  assert.equal((await agent.messages.next()).pong, true)
   const receivedByAgent = once(agentData, 'data')
   clientData.write(Buffer.from([0x7f]))
   assert.deepEqual((await receivedByAgent)[0], Buffer.from([0x7f]))
@@ -128,6 +134,10 @@ test('one relay port pairs ticketed data sockets, preserves preface remainders, 
   )
   sockets.push(replacementAgent.socket)
   await replacementAgent.messages.next()
+  assert.deepEqual((await replacementAgent.messages.next()).clientPresence, {
+    uuid: clientRegistration.registration.uuid,
+    connected: true
+  })
   const receivedByClient = once(clientData, 'data')
   agentData.write(Buffer.from([0x80]))
   assert.deepEqual((await receivedByClient)[0], Buffer.from([0x80]))
@@ -168,6 +178,7 @@ test('client replacement cancels pending tickets and routes keep session identit
   assert.equal(client.registration.ready, true)
   assert.equal(otherClient.registration.ready, false)
   assert.equal(relay.getState().connectionNames, 2)
+  assert.deepEqual((await agent.messages.next()).clientPresence, { uuid: 'shared-uuid', connected: true })
 
   send(client, { openTunnel: { requestId: 'before-replacement' } })
   const [firstOpen] = await Promise.all([client.messages.next(), agent.messages.next()])
@@ -216,7 +227,9 @@ test('invalid registration fields are rejected before allocating a route', { tim
     { uuid: '' },
     { uuid: 'x'.repeat(129) },
     { uuid: null },
-    { type: 'unknown' }
+    { type: 'unknown' },
+    ...[null, 0, -1, 33, 65536, 1.5, '2', {}].map(portCount => ({ portCount })),
+    { type: TYPES.AGENT, portCount: 33 }
   ]) {
     const socket = await connectData(port)
     t.after(() => socket.destroy())

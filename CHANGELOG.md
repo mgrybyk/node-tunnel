@@ -2,6 +2,27 @@
 
 Only user-visible changes are listed here.
 
+## 0.9.0
+
+### Breaking
+
+- Wire protocol version 9 requires upgrading relay, agents, and clients
+  together.
+- Relay addresses, route IDs, target addresses, bind addresses, and ports
+  must be configured explicitly. Missing or blank required settings fail startup.
+- Use `N_T_ROUTE_ID` on both agents and clients instead of `N_T_AGENT_NAME`
+  and `N_T_CLIENT_NAME`. Matching IDs select the route.
+- Use `N_T_CLIENT_PORTS` and `N_T_AGENT_DATA_PORTS` even for a single port.
+
+### Configuration
+
+- Forward multiple TCP ports with ordered lists and inclusive ranges in
+  `N_T_CLIENT_PORTS` and `N_T_AGENT_DATA_PORTS`. Ports map by position; clients
+  may use the first N agent ports. Each list supports up to 32 ports, with
+  duplicate or overlapping ports rejected.
+- Separate `relay.example.env`, `agent.example.env`, and `client.example.env`
+  templates replace `example.env`.
+
 ## 0.8.0
 
 ### Breaking

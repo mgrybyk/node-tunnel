@@ -4,4 +4,4 @@ benchmark-results/
 .vscode
 .env.*
 *.env
-!example.env
+!*.example.env

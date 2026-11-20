@@ -20,7 +20,8 @@ Client ──data──> Relay <──data── Agent ──> Target
 
 When a client requests a tunnel:
 
-1. The relay creates a short-lived ticket and sends it to both peers.
+1. The relay validates the requested port index, creates a short-lived ticket,
+   and sends it to both peers. The agent also receives the port index.
 2. Each peer opens a data connection using that ticket.
 3. The relay validates and pairs the connections.
 4. Both peers receive a readiness acknowledgement.
@@ -28,6 +29,12 @@ When a client requests a tunnel:
 
 Tickets are random, single-use, expiring, and bound to the current client and
 agent sessions.
+
+Peers advertise their configured port counts during registration. A client
+cannot have more ports than its agent. Each local listener requests its index
+in the ordered client port list; the agent independently validates the index
+and selects that entry from its own target port list. Destination port numbers
+stay on the agent. Port lists do not add control connections or relay listeners.
 
 ## Components
 
