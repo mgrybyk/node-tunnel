@@ -3,9 +3,9 @@
 Pass an environment file after the command:
 
 ```sh
-npm run relay -- relay.env
-npm run agent -- agent.env
-npm run client -- client.env
+node relay relay.env
+node agent agent.env
+node client client.env
 ```
 
 An explicitly named file must exist. Without a file argument, `.env` is loaded

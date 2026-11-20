@@ -6,8 +6,8 @@
 [![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-7c3aed.svg)](LICENSE)
 
-`node-tunnel` is a small, self-hosted reverse TCP tunnel. It connects a local
-client to a private service through a relay on a public host. SSH, RDP,
+`node-tunnel` is a small, self-hosted reverse TCP tunnel. It connects local
+clients to private services through a relay on a public host. SSH, RDP,
 databases, HTTP, and other TCP protocols use the same setup.
 
 ## Is it for me?
@@ -25,10 +25,11 @@ to an untrusted network.
 
 ## How it works
 
-The agent and client both connect outward to the relay. In this example, the
-client exposes `127.0.0.1:8000` and routes it to port `22` beside the agent.
+The agent and clients connect outward to the same public relay. Multiple clients
+can access services through one agent, with local ports mapped to agent target
+ports using [port lists or ranges](docs/CONFIGURATION.md#port-lists-and-ranges).
 
-![SSH routed from the client through the public relay to the agent](docs/tunnel-flow.png)
+![Clients accessing SSH and HTTPS services through a public relay and one agent](docs/tunnel-flow.png)
 
 ## Quick start: tunnel SSH
 
@@ -62,7 +63,7 @@ N_T_RELAY_PORT=32121
 Allow inbound TCP traffic on port `32121`, then run:
 
 ```sh
-npm run relay -- relay.env
+node relay relay.env
 ```
 
 ### 2. Private host: agent
@@ -80,7 +81,7 @@ N_T_AGENT_DATA_PORTS=22
 ```
 
 ```sh
-npm run agent -- agent.env
+node agent agent.env
 ```
 
 The target can be any host reachable by the agent, not only the agent host.
@@ -100,7 +101,7 @@ N_T_CLIENT_PORTS=8000
 ```
 
 ```sh
-npm run client -- client.env
+node client client.env
 ```
 
 The client and agent must use the same `N_T_ROUTE_ID`. Connect through the local port:
