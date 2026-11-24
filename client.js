@@ -10,15 +10,17 @@ if (require.main === module) loadEnvironment(process.argv[2])
 
 const { createDiagnostics } = require('./diagnostics')
 const { CONNECTION_KINDS, TYPES } = require('./protocol')
-const { createMessaging } = require('./utils')
+const { createLog, createMessaging } = require('./utils')
 const { enableSocketKeepAlive, stopListening, destroySockets, waitForSockets, runCli } = require('./lifecycle')
 const { bridgeWhenReady } = require('./data-readiness')
 const { createPeerSession } = require('./peer-session')
+const { createWasmClientProtocol } = require('./rust/client-protocol')
 
 function createClient(config = getClientConfig()) {
   const localPorts = validatePorts(config.localPorts, 'localPorts', true)
-  const messaging = createMessaging(config)
-  const { log, sendJson } = messaging
+  const protocol = config.protocolBackend === 'wasm' ? createWasmClientProtocol(config, localPorts.length) : undefined
+  const messaging = protocol ? undefined : createMessaging(config)
+  const log = messaging?.log ?? createLog(config)
   const { traceSocket } = createDiagnostics(log)
   const events = new EventEmitter()
   const localConnections = new Set()
@@ -34,6 +36,8 @@ function createClient(config = getClientConfig()) {
   const controlSession = createPeerSession({
     config,
     messaging,
+    protocol,
+    log,
     type: TYPES.CLIENT,
     name: config.name,
     portCount: localPorts.length,
@@ -140,7 +144,8 @@ function createClient(config = getClientConfig()) {
 
     const dataClient = connectToRelay(config, { allowHalfOpen: true }, () => {
       enableSocketKeepAlive(dataClient)
-      sendJson(dataClient, {
+      if (protocol) return protocol.sendDataPreface(dataClient, ticket)
+      messaging.sendJson(dataClient, {
         kind: CONNECTION_KINDS.DATA,
         type: TYPES.CLIENT,
         ticket
@@ -150,6 +155,7 @@ function createClient(config = getClientConfig()) {
     dataConnections.add(dataClient)
     bridgeWhenReady(dataClient, localSocket, {
       messaging,
+      createReadyDecoder: protocol?.createReadyDecoder,
       timeout: config.handshakeTimeout,
       trace,
       onSetupFailed: () => controlSession.send({ cancelTunnel: { ticket } })

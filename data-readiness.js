@@ -5,26 +5,25 @@ const { tryParseJSON } = require('./utils')
 const { startSocketDeadline } = require('./lifecycle')
 const { bridgeSockets } = require('./socket-bridge')
 
-function bridgeWhenReady(dataSocket, localSocket, { messaging, timeout, trace, onSetupFailed }) {
+function bridgeWhenReady(
+  dataSocket,
+  localSocket,
+  { messaging, createReadyDecoder = createJsonReadyDecoder(messaging), timeout, trace, onSetupFailed }
+) {
   const clearDeadline = startSocketDeadline(
     dataSocket,
     timeout,
     trace && (() => trace('data-readiness-timeout', { timeoutMs: timeout }))
   )
-  const decodeReady = messaging.createFirstMessageDecoder(
-    (data, remainder) => {
-      const message = tryParseJSON(data)
-      if (!message || message.protocolVersion !== PROTOCOL_VERSION || message.ready !== true) {
-        trace?.('invalid-data-ready')
-        return dataSocket.destroy()
-      }
+  const decodeReady = createReadyDecoder(
+    remainder => {
       if (localSocket.destroyed) return dataSocket.destroy()
       trace?.('bridge-ready', { remainderBytes: remainder.length })
       cleanup()
       bridgeSockets(dataSocket, localSocket, { leftInitialData: remainder })
     },
-    () => {
-      trace?.('invalid-data-frame')
+    reason => {
+      trace?.(reason)
       dataSocket.destroy()
     }
   )
@@ -47,6 +46,20 @@ function bridgeWhenReady(dataSocket, localSocket, { messaging, timeout, trace, o
     dataSocket.off('close', onDataClose)
     localSocket.off('close', onLocalClose)
   }
+}
+
+function createJsonReadyDecoder(messaging) {
+  return (onReady, onInvalid) =>
+    messaging.createFirstMessageDecoder(
+      (data, remainder) => {
+        const message = tryParseJSON(data)
+        if (!message || message.protocolVersion !== PROTOCOL_VERSION || message.ready !== true) {
+          return onInvalid('invalid-data-ready')
+        }
+        onReady(remainder)
+      },
+      () => onInvalid('invalid-data-frame')
+    )
 }
 
 module.exports = { bridgeWhenReady }

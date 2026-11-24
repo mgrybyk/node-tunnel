@@ -84,6 +84,7 @@ for (const role of ['agent', 'client']) {
         targetPorts: [target.address().port],
         localHost: host,
         localPorts: [localPort],
+        protocolBackend: process.env.N_T_CLIENT_PROTOCOL_BACKEND,
         handshakeTimeout: 300,
         reconnectDelay: 100,
         reconnectMaxDelay: 100,

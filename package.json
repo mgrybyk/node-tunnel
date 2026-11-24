@@ -24,6 +24,8 @@
     "relay-connection.js",
     "tcp-data-transport.js",
     "utils.js",
+    "rust/client-core.js",
+    "rust/client-protocol.js",
     "benchmark",
     "relay.example.env",
     "agent.example.env",
@@ -48,6 +50,7 @@
     "relay": "node relay.js",
     "agent": "node agent.js",
     "client": "node client.js",
+    "build:wasm": "node scripts/build-client-wasm.js",
     "check": "biome check .",
     "lint": "biome lint .",
     "format": "biome format --write .",
@@ -55,6 +58,7 @@
     "benchmark": "node benchmark/runner.js",
     "benchmark:compare": "node benchmark/compare.js",
     "test": "node --test --test-concurrency=3 test/*.test.js",
+    "test:rust": "node --import ./test-support/enable-rust-client.mjs --test --test-concurrency=3 test/e2e.test.js test/port-ranges.test.js test/readiness.test.js test/reliability.test.js test/rust-client.test.mjs test/rust-wire.test.mjs",
     "test:coverage": "c8 node --test --test-concurrency=2 test/*.test.js"
   },
   "repository": {

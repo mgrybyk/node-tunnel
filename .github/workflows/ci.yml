@@ -91,9 +91,42 @@ jobs:
       - name: Test with coverage
         run: npm run test:coverage
 
+  rust-client:
+    name: Test Rust client (native and WASM)
+    needs: changes
+    if: needs.changes.outputs.run-tests == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Test native Rust client
+        working-directory: rust
+        run: cargo test --locked
+
+      - name: Build and link native C ABI
+        working-directory: rust
+        run: |
+          cargo build --locked --release
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/native_smoke.c \
+            -Ltarget/release -lnode_tunnel_client -Wl,-rpath,"$PWD/target/release" -o target/native-smoke
+          target/native-smoke
+
+      - name: Build WASM
+        run: npm run build:wasm
+
+      - name: Run Rust client interoperability tests
+        run: npm run test:rust
+
   status:
     name: CI status
-    needs: [changes, test]
+    needs: [changes, test, rust-client]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -103,10 +136,11 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           RUN_TESTS: ${{ needs.changes.outputs.run-tests }}
           TEST_RESULT: ${{ needs.test.result }}
+          RUST_RESULT: ${{ needs.rust-client.result }}
         run: |
           if [[ "$CHANGES_RESULT" == 'success' ]] &&
-             { [[ "$RUN_TESTS" == 'false' && "$TEST_RESULT" == 'skipped' ]] ||
-               [[ "$RUN_TESTS" == 'true' && "$TEST_RESULT" == 'success' ]]; }; then
+             { [[ "$RUN_TESTS" == 'false' && "$TEST_RESULT" == 'skipped' && "$RUST_RESULT" == 'skipped' ]] ||
+               [[ "$RUN_TESTS" == 'true' && "$TEST_RESULT" == 'success' && "$RUST_RESULT" == 'success' ]]; }; then
             echo 'CI passed.'
           else
             echo 'CI failed or was cancelled.'

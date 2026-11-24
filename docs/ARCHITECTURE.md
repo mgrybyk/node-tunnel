@@ -63,6 +63,8 @@ parser that scans chunks once and copies fragmented frames only when complete.
 Each encrypted, base64-encoded control frame is limited to 4 KiB, excluding its
 newline delimiter. Raw tunnel payload bytes do not count toward this limit.
 
+The [Rust client core](RUST-CLIENT.md) targets future mobile apps and uses WASM to test wire compatibility with the JavaScript peers.
+
 ## TLS boundary
 
 The recommended deployment terminates TLS at HAProxy:
