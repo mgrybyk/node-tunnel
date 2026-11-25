@@ -1,0 +1,17 @@
+[package]
+name = "node-tunnel-client"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+base64 = "0.22"
+chacha20poly1305 = { version = "0.11", default-features = false }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

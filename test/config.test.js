@@ -5,6 +5,7 @@ const { requiredEnv } = require('../test-support/config')
 const assert = require('node:assert/strict')
 const { spawnSync } = require('node:child_process')
 const path = require('node:path')
+const { createClient } = require('../client')
 const { loadEnvironment, getAgentConfig, getClientConfig, getRelayConfig } = require('../config')
 const { createMessaging } = require('../utils')
 const { createDiagnostics } = require('../diagnostics')
@@ -134,6 +135,15 @@ for (const [build, plural, property] of [
     }
   })
 }
+
+test('only the exact wasm backend value opts out of JavaScript', () => {
+  assert.equal(getClientConfig(requiredEnv).protocolBackend, 'js')
+  assert.equal(getClientConfig({ ...requiredEnv, N_T_CLIENT_PROTOCOL_BACKEND: 'wasm' }).protocolBackend, 'wasm')
+  for (const value of ['', 'js', 'unknown', 'WASM', ' wasm ']) {
+    assert.equal(getClientConfig({ ...requiredEnv, N_T_CLIENT_PROTOCOL_BACKEND: value }).protocolBackend, 'js')
+    assert.doesNotThrow(() => createClient({ ...getClientConfig(requiredEnv), protocolBackend: value }))
+  }
+})
 
 for (const [role, build, required] of [
   ['relay', getRelayConfig, ['N_T_RELAY_BIND_HOST', 'N_T_RELAY_PORT']],

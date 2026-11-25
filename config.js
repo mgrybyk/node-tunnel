@@ -130,6 +130,7 @@ function getClientConfig(env = process.env) {
   return {
     ...readCommonConfig(env),
     useTLS: env.N_T_USE_TLS === 'true',
+    protocolBackend: env.N_T_CLIENT_PROTOCOL_BACKEND === 'wasm' ? 'wasm' : 'js',
     name: readName('N_T_ROUTE_ID', env),
     localHost: readRequired('N_T_CLIENT_BIND_HOST', env),
     localPorts: readPortList('N_T_CLIENT_PORTS', env)

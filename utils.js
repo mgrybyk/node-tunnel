@@ -14,18 +14,26 @@ function tryParseJSON(json) {
   }
 }
 
-function createMessaging(config = {}) {
+function getControlKey(config) {
   const key = config.cryptKey ?? process.env.N_T_CRYPT_KEY
   if (typeof key !== 'string' || Buffer.byteLength(key) !== 32) {
     throw new Error('N_T_CRYPT_KEY must contain exactly 32 UTF-8 bytes')
   }
-  const cryptKey = Buffer.from(key)
-  const log = {
+  return key
+}
+
+function createLog(config) {
+  return {
     info: (...args) => console.log('INFO:', ...args),
     debug: (config.logDebug ?? process.env.N_T_LOG_DEBUG === 'true') ? (...args) => console.log(...args) : undefined,
     err:
       (config.logError ?? process.env.N_T_LOG_ERROR === 'true') ? (...args) => console.error('ERR:', ...args) : () => {}
   }
+}
+
+function createMessaging(config = {}) {
+  const cryptKey = Buffer.from(getControlKey(config))
+  const log = createLog(config)
 
   const cryptContext = Buffer.from('node-tunnel-control')
   const cryptAlg = 'chacha20-poly1305'
@@ -85,45 +93,16 @@ function createMessaging(config = {}) {
   }
 
   function createDecoder(onMessage, onInvalid, firstOnly) {
-    let fragments = []
-    let length = 0
-    let stopped = false
-
-    return function decode(data) {
-      if (stopped) return
-      let offset = 0
-      while (offset < data.length) {
-        const delimiter = data.indexOf(0x0a, offset)
-        const end = delimiter < 0 ? data.length : delimiter
-        const fragment = data.subarray(offset, end)
-        length += fragment.length
-        if (length > MAX_CONTROL_FRAME_BYTES) return invalid()
-
-        if (delimiter < 0) {
-          fragments.push(fragment)
-          return
-        }
-        const frame = fragments.length ? Buffer.concat([...fragments, fragment], length) : fragment
-        fragments = []
-        length = 0
+    return createFrameDecoder(
+      (frame, remainder) => {
         const message = crypt.decrypt(frame.toString('ascii'))
-        if (message === null) return invalid()
-        offset = delimiter + 1
-        if (firstOnly) {
-          stopped = true
-          onMessage(message, data.subarray(offset))
-          return
-        }
-        onMessage(message)
-      }
-    }
-
-    function invalid() {
-      stopped = true
-      fragments = []
-      length = 0
-      onInvalid?.()
-    }
+        if (message === null) return false
+        if (firstOnly) onMessage(message, remainder)
+        else onMessage(message)
+      },
+      onInvalid,
+      { firstOnly }
+    )
   }
 
   return {
@@ -136,4 +115,51 @@ function createMessaging(config = {}) {
   }
 }
 
-module.exports = { MAX_CONTROL_FRAME_BYTES, createMessaging, tryParseJSON }
+function createFrameDecoder(onFrame, onInvalid, { firstOnly = false, maxBytes = MAX_CONTROL_FRAME_BYTES } = {}) {
+  let fragments = []
+  let length = 0
+  let stopped = false
+
+  return function decode(data) {
+    if (stopped) return
+    let offset = 0
+    while (offset < data.length) {
+      const delimiter = data.indexOf(0x0a, offset)
+      const end = delimiter < 0 ? data.length : delimiter
+      const fragment = data.subarray(offset, end)
+      length += fragment.length
+      if (length > maxBytes) return invalid()
+
+      if (delimiter < 0) {
+        fragments.push(fragment)
+        return
+      }
+      const frame = fragments.length ? Buffer.concat([...fragments, fragment], length) : fragment
+      fragments = []
+      length = 0
+      offset = delimiter + 1
+      if (firstOnly) {
+        stopped = true
+        if (onFrame(frame, data.subarray(offset)) === false) invalid()
+        return
+      }
+      if (onFrame(frame) === false) return invalid()
+    }
+  }
+
+  function invalid() {
+    stopped = true
+    fragments = []
+    length = 0
+    onInvalid?.()
+  }
+}
+
+module.exports = {
+  MAX_CONTROL_FRAME_BYTES,
+  createFrameDecoder,
+  createLog,
+  createMessaging,
+  getControlKey,
+  tryParseJSON
+}

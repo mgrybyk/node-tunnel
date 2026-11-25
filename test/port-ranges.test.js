@@ -40,7 +40,13 @@ async function setup(t, clientCount = 2) {
     return application
   }
   const client = (localPorts = ports.clients) => {
-    const application = createClient(getClientConfig({ ...common, N_T_CLIENT_PORTS: localPorts.join(',') }))
+    const application = createClient(
+      getClientConfig({
+        ...common,
+        N_T_CLIENT_PORTS: localPorts.join(','),
+        N_T_CLIENT_PROTOCOL_BACKEND: process.env.N_T_CLIENT_PROTOCOL_BACKEND
+      })
+    )
     applications.push(application)
     return application
   }
