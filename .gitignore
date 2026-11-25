@@ -5,3 +5,5 @@ benchmark-results/
 .env.*
 *.env
 !*.example.env
+/rust/client.wasm
+/rust/target/

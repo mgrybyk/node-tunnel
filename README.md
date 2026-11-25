@@ -10,6 +10,9 @@
 clients to private services through a relay on a public host. SSH, RDP,
 databases, HTTP, and other TCP protocols use the same setup.
 
+[Dirka Mobile](https://github.com/mgrybyk/dirka-mobile) is available as a
+`node-tunnel` client for Android devices.
+
 ## Is it for me?
 
 Use `node-tunnel` when:
