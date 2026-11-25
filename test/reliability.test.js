@@ -158,6 +158,12 @@ test('connection resets and a slow reader do not poison later streams', { timeou
 
   try {
     const backend = createEchoServer()
+    backend.on('connection', socket => {
+      socket.on('error', error => {
+        // Aborting a tunnel can reset the backend while it is still echoing.
+        if (error.code !== 'ECONNRESET' && error.code !== 'EPIPE') throw error
+      })
+    })
     await listen(backend)
     servers.push(backend)
     const ports = await reserveTopologyPorts(1)
